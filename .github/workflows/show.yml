@@ -1,0 +1,31 @@
+name: Show control
+
+# Start, stop, pause or resume the slideshow on hydra from GitHub:
+#   gh workflow run show.yml -f action=pause
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do with the show on hydra
+        type: choice
+        options: [status, start, stop, restart, pause, resume]
+        default: status
+      show_args:
+        description: Extra options for start/restart, e.g. --shuffle --hold 20
+        type: string
+        default: ""
+
+concurrency:
+  group: hydra
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: [self-hosted, itaka]
+    steps:
+      - uses: actions/checkout@v4
+      - name: ${{ inputs.action }}
+        env:
+          SHOW_ARGS: ${{ inputs.show_args }}
+        run: make "${{ inputs.action }}" SHOW_ARGS="$SHOW_ARGS"
