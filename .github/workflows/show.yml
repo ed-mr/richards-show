@@ -1,6 +1,6 @@
 name: Show control
 
-# Start, stop, pause or resume the slideshow on hydra from GitHub:
+# Start, stop, pause, resume or configure the slideshow on hydra from GitHub:
 #   gh workflow run show.yml -f action=pause
 
 on:
@@ -9,10 +9,10 @@ on:
       action:
         description: What to do with the show on hydra
         type: choice
-        options: [status, start, stop, restart, pause, resume]
+        options: [status, start, stop, restart, pause, resume, config]
         default: status
       show_args:
-        description: Extra options for start/restart, e.g. --shuffle --hold 20
+        description: "For config only: options for fb-slideshow.py, e.g. --shuffle --hold 20 (empty = defaults)"
         type: string
         default: ""
 

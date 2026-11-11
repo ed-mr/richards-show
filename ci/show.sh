@@ -1,64 +1,78 @@
 #!/bin/sh
-# Controls the slideshow on the Pi. Runs on hydra (deployed next to
-# fb-slideshow.py), usually invoked over ssh by the Makefile.
+# Controls the slideshow on the Pi via its systemd user service. Runs on
+# hydra (deployed next to fb-slideshow.py), usually invoked over ssh by the
+# Makefile.
 #
+#   show.sh install                 install/update and enable the service
 #   show.sh start|stop|restart|pause|resume|status
+#   show.sh config "<options>"      set options for fb-slideshow.py
+#                                   (empty = defaults), restarts if running
 #
-# SHOW_ARGS (env) is passed to fb-slideshow.py on start, e.g. "--shuffle".
-# Log and pid file live in /tmp (tmpfs), so nothing is written to the SD card.
+# Logs go to the journal, which is volatile (RAM) on hydra.
 set -eu
 
 DIR=$(cd "$(dirname "$0")/.." && pwd)
-LOG=/tmp/fb-slideshow.log
-PIDFILE=/tmp/fb-slideshow.pid
-SHOW_ARGS=${SHOW_ARGS:-}
+UNIT=fb-slideshow.service
+UNIT_DIR=$HOME/.config/systemd/user
+CONF_DIR=$HOME/.config/fb-slideshow
+CONF=$CONF_DIR/env
 
-running_pid() {
-    pgrep -f 'python3? .*fb-slideshow\.py' | head -n 1
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+sc() { systemctl --user "$@"; }
+
+active() { sc is-active --quiet "$UNIT"; }
+
+log_lines() {
+    # messages of the current run only
+    id=$(sc show -p InvocationID --value "$UNIT")
+    [ -n "$id" ] || return 0
+    journalctl --no-pager -q -o cat "_SYSTEMD_INVOCATION_ID=$id" 2>/dev/null ||
+        journalctl --no-pager -q -o cat --user-unit "$UNIT" -n 200 2>/dev/null || true
 }
 
 paused() {
     # fb-slideshow.py logs PAUSED / RESUMED on every SIGUSR1
-    [ -f "$LOG" ] && [ "$(grep -E '^(PAUSED|RESUMED)$' "$LOG" | tail -n 1)" = PAUSED ]
+    [ "$(log_lines | grep -E '^(PAUSED|RESUMED)$' | tail -n 1)" = PAUSED ]
 }
 
-start() {
-    pid=$(running_pid); if [ -n "$pid" ]; then
-        echo "already running (pid $pid)"
-        return 0
-    fi
-    # shellcheck disable=SC2086  # SHOW_ARGS is meant to be split
-    PYTHONDONTWRITEBYTECODE=1 setsid nohup python3 "$DIR/fb-slideshow.py" $SHOW_ARGS \
-        >"$LOG" 2>&1 </dev/null &
-    echo $! >"$PIDFILE"
-    sleep 2
-    pid=$(running_pid); if [ -n "$pid" ]; then
-        echo "started (pid $pid)"
+install_unit() {
+    mkdir -p "$UNIT_DIR"
+    tmp=$(mktemp)
+    sed "s#@DIR@#$DIR#g" "$DIR/ci/fb-slideshow.service" >"$tmp"
+    # only write when changed (keeps SD-card writes down)
+    if cmp -s "$tmp" "$UNIT_DIR/$UNIT"; then
+        rm -f "$tmp"
     else
-        echo "failed to start, log:" >&2
-        cat "$LOG" >&2
-        return 1
+        mv "$tmp" "$UNIT_DIR/$UNIT"
+        sc daemon-reload
+        echo "service file updated"
     fi
+    sc is-enabled --quiet "$UNIT" 2>/dev/null || sc enable --quiet "$UNIT"
+    # a show started by hand (outside systemd) would block /dev/fb1
+    for pid in $(pgrep -f 'python3? .*fb-slideshow\.py' || true); do
+        if [ "$pid" != "$(sc show -p MainPID --value "$UNIT")" ]; then
+            echo "stopping show outside systemd (pid $pid)"
+            kill -TERM "$pid"
+        fi
+    done
+    [ "$(loginctl show-user "$(id -un)" -p Linger --value)" = yes ] ||
+        echo "warning: linger is off, the show will not start at boot" \
+             "(fix: loginctl enable-linger)" >&2
+    echo "service installed and enabled"
 }
 
-stop() {
-    pid=$(running_pid) || true
-    if [ -z "$pid" ]; then
-        echo "not running"
-        return 0
+configure() {
+    mkdir -p "$CONF_DIR"
+    new="SHOW_ARGS=$1"
+    if [ "$(cat "$CONF" 2>/dev/null)" != "$new" ]; then
+        printf '%s\n' "$new" >"$CONF"
     fi
-    kill -TERM "$pid"
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        [ -n "$(running_pid)" ] || { rm -f "$PIDFILE"; echo "stopped"; return 0; }
-        sleep 0.5
-    done
-    echo "still running after SIGTERM (pid $pid)" >&2
-    return 1
+    echo "options: ${1:-(defaults)}"
+    if active; then sc restart "$UNIT"; echo "restarted"; fi
 }
 
 signal_pause() {  # $1 = wanted state: pause | resume
-    pid=$(running_pid) || true
-    if [ -z "$pid" ]; then
+    if ! active; then
         echo "not running" >&2
         return 1
     fi
@@ -66,32 +80,34 @@ signal_pause() {  # $1 = wanted state: pause | resume
         echo "already ${1}d"
         return 0
     fi
-    kill -USR1 "$pid"
+    sc kill --signal=USR1 --kill-whom=main "$UNIT"
     sleep 0.5
     if paused; then echo "paused"; else echo "running"; fi
 }
 
 status() {
-    pid=$(running_pid) || true
-    if [ -z "$pid" ]; then
-        echo "not running"
+    if ! active; then
+        echo "not running ($(sc is-active "$UNIT" || true))"
     elif paused; then
-        echo "paused (pid $pid)"
+        echo "paused (pid $(sc show -p MainPID --value "$UNIT"))"
     else
-        echo "running (pid $pid)"
+        echo "running (pid $(sc show -p MainPID --value "$UNIT"))"
     fi
-    if [ -f "$LOG" ]; then
-        echo "--- $LOG (last lines)"
-        tail -n 5 "$LOG"
-    fi
+    echo "enabled at boot: $(sc is-enabled "$UNIT" 2>/dev/null || echo no)"
+    echo "options: $(sed -n 's/^SHOW_ARGS=//p' "$CONF" 2>/dev/null)"
+    echo "--- log (current run)"
+    log_lines | tail -n 5
 }
 
 case "${1:-}" in
-    start) start ;;
-    stop) stop ;;
-    restart) stop && start ;;
+    install) install_unit ;;
+    start) sc start "$UNIT" && echo "started" ;;
+    stop) sc stop "$UNIT" && echo "stopped" ;;
+    restart) sc restart "$UNIT" && echo "restarted" ;;
     pause) signal_pause pause ;;
     resume) signal_pause resume ;;
     status) status ;;
-    *) echo "usage: $0 start|stop|restart|pause|resume|status" >&2; exit 2 ;;
+    config) configure "${2:-}" ;;
+    *) echo "usage: $0 install|start|stop|restart|pause|resume|status|config [options]" >&2
+       exit 2 ;;
 esac
