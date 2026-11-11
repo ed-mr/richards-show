@@ -64,8 +64,44 @@ kill -USR1 <PID>
 Exit: `SIGTERM` (`pkill -f fb-slideshow.py`) or Ctrl+C. The display is
 set to black.
 
+When the show runs as a service (see below), prefer `make pause` /
+`make resume` / `make stop` from itaka, or `systemctl --user stop fb-slideshow`
+on hydra.
+
 ## Tests
 
 ```bash
 python3 -m pytest -q
 ```
+
+## Deployment and CI
+
+The show runs on hydra as a systemd **user** service (`fb-slideshow.service`)
+and starts at boot (linger is enabled for the user, no `sudo` needed). It is
+restarted automatically if it fails, e.g. while `/dev/fb1` is not ready yet
+after boot. Logs go to the journal, which is kept in RAM on hydra.
+
+Everything is driven from itaka with `make` (ssh/scp to hydra):
+
+| Command | What it does |
+|---|---|
+| `make test` | tests on itaka, with hydra's Python / numpy / Pillow versions (`requirements-ci.txt`) |
+| `make deploy` | copy to `hydra:~/fb-slideshow` and install/update the service |
+| `make test-hydra` | tests on hydra, version check, verify the service file |
+| `make start` / `stop` / `restart` | control the service |
+| `make pause` / `resume` | pause or resume (`SIGUSR1`), the image stays |
+| `make status` | state, boot setting, options, recent log |
+| `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options (kept across reboots and deploys; `SHOW_ARGS=` resets) |
+| `make ci` | test + deploy + test-hydra + restart |
+
+GitHub Actions runs the same steps on a self-hosted runner on itaka: the
+tests on every push and pull request, and on pushes to `main` also deploy
+and restart. The show can also be controlled from GitHub:
+
+```bash
+gh workflow run show.yml -f action=pause
+gh workflow run show.yml -f action=config -f show_args="--shuffle"
+```
+
+On hydra itself: `systemctl --user status fb-slideshow`,
+`journalctl --user-unit fb-slideshow`.

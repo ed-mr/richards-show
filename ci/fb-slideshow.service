@@ -1,0 +1,27 @@
+# systemd user service for the slideshow on hydra.
+# Installed by "ci/show.sh install" (part of "make deploy"), which replaces
+# @DIR@ with the deploy directory. Starts at boot because linger is enabled
+# for the user (loginctl enable-linger).
+#
+# Options for fb-slideshow.py: SHOW_ARGS in ~/.config/fb-slideshow/env,
+# set with "make config SHOW_ARGS='--shuffle --hold 20'".
+
+[Unit]
+Description=Framebuffer slideshow on the SPI display
+Documentation=https://github.com/fritzthekid/richards-show
+# keep retrying while /dev/fb1 or the stick are not ready after boot
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@DIR@
+Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 SHOW_ARGS=
+EnvironmentFile=-%h/.config/fb-slideshow/env
+ExecStart=/usr/bin/python3 @DIR@/fb-slideshow.py $SHOW_ARGS
+# exit code 2 = framebuffer not readable yet; SIGTERM exits cleanly with 0
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target
