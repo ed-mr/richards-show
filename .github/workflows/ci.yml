@@ -1,0 +1,38 @@
+name: CI
+
+# Runs on the self-hosted runner on itaka (home LAN), which can reach hydra
+# over ssh. Tests run on every push and pull request; pushes to main are
+# additionally deployed to hydra, tested there, and the show is restarted.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: hydra
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: [self-hosted, itaka]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tests on itaka (Python/numpy/Pillow as on hydra)
+        run: make test
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, itaka]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Copy to hydra
+        run: make deploy
+      - name: Tests on hydra
+        run: make test-hydra
+      - name: Restart the show
+        run: make restart
+      - name: Status
+        run: make status
