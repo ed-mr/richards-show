@@ -24,7 +24,7 @@ jobs:
   control:
     runs-on: [self-hosted, itaka]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: ${{ inputs.action }}
         env:
           SHOW_ARGS: ${{ inputs.show_args }}

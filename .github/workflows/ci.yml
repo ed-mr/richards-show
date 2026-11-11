@@ -18,7 +18,7 @@ jobs:
   test:
     runs-on: [self-hosted, itaka]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Tests on itaka (Python/numpy/Pillow as on hydra)
         run: make test
 
@@ -27,7 +27,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: [self-hosted, itaka]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Copy to hydra
         run: make deploy
       - name: Tests on hydra
