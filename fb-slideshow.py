@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Diashow fuer das kleine SPI-TFT (fbtft) am Raspberry Pi.
+"""Slideshow for the small SPI TFT (fbtft) on a Raspberry Pi.
 
-Zeigt die JPEGs aus einem Verzeichnis (Standard: /mnt/stick/bilder) der Reihe
-nach auf dem Framebuffer, mit wechselnden, zufaellig gewaehlten Uebergaengen.
+Shows the JPEGs from a directory (default: /mnt/stick/bilder) in order on
+the framebuffer, with changing, randomly chosen transitions.
 
-Anders als fbi schreibt dieses Script direkt in den Framebuffer (mmap), weil
-nur so Uebergangs-Frames moeglich sind. Wie beim fb-image-watcher.sh gilt:
- - Framebuffer-Nummer kann variieren (FB_DEVICE, Standard /dev/fb1)
- - waveshare35a-Overlay steuert das Panel mit invertierten Farben an
-   -> wird aus dem Device-Tree erkannt (oder per --invert on/off erzwungen)
+Unlike fbi, this script writes directly into the framebuffer (mmap), because
+that is the only way to render transition frames. As with fb-image-watcher.sh:
+ - the framebuffer number may vary (FB_DEVICE, default /dev/fb1)
+ - the waveshare35a overlay drives the panel with inverted colors
+   -> detected from the device tree (or forced with --invert on/off)
 
-Pause/Weiter:   kill -USR1 <pid>   (bzw. pkill -USR1 -f fb-slideshow.py)
-Farbdiagnose:   --testcard [bars|ramps] [--gamma 2.0 | R,G,B]
+Pause/resume:      kill -USR1 <pid>   (or pkill -USR1 -f fb-slideshow.py)
+Color diagnostics: --testcard [bars|ramps] [--gamma 2.0 | R,G,B]
 
-Abhaengigkeiten:  sudo apt install python3-pil python3-numpy
+Dependencies:  sudo apt install python3-pil python3-numpy
 """
 import argparse
 import math
@@ -50,11 +50,11 @@ class FbInfo(NamedTuple):
     width: int
     height: int
     bpp: int
-    stride: int  # Bytes pro Zeile
+    stride: int  # bytes per row
 
 
 def read_fb_info(dev, sysfs=SYSFS_GRAPHICS):
-    """Geometrie aus sysfs (kein fbset noetig)."""
+    """Geometry from sysfs (no fbset needed)."""
     base = os.path.join(sysfs, os.path.basename(dev))
 
     def rd(name):
@@ -71,7 +71,7 @@ def read_fb_info(dev, sysfs=SYSFS_GRAPHICS):
 
 
 def detect_invert(dt_dir=DT_SPI):
-    """waveshare35a steuert das Panel invertiert an, tft35a nicht."""
+    """waveshare35a drives the panel inverted, tft35a does not."""
     try:
         names = os.listdir(dt_dir)
     except OSError:
@@ -84,13 +84,13 @@ def _triple(x):
 
 
 def apply_gamma(frame, gamma, limit=255.0, black=0.0):
-    """Tonwertkurve pro Kanal: out = black + (limit - black) * (in/255)**gamma.
+    """Per-channel tone curve: out = black + (limit - black) * (in/255)**gamma.
 
-    gamma: Zahl oder (R,G,B); >1 dunkelt Mitteltoene ab.
-    limit: hoechster verwendeter Rohwert (Zahl oder (R,G,B), 1..255). Fuer Panels
-    mit gefalteter Kennlinie nur den ersten monotonen Bereich nutzen.
-    black: Rohwert fuer Eingang 0 (Zahl oder (R,G,B)); gleicht einen Farbstich
-    im Schwarz aus, indem die schwaecheren Kanaele angehoben werden."""
+    gamma: number or (R,G,B); >1 darkens the midtones.
+    limit: highest raw value used (number or (R,G,B), 1..255). For panels
+    with a folded response curve, use only the first monotonic range.
+    black: raw value for input 0 (number or (R,G,B)); compensates a color
+    cast in the blacks by lifting the weaker channels."""
     g, lim, bl = _triple(gamma), _triple(limit), _triple(black)
     if g == (1.0,) * 3 and lim == (255.0,) * 3 and bl == (0.0,) * 3:
         return frame
@@ -105,7 +105,7 @@ _BAYER4 = (np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5
 
 
 def dither565(frame):
-    """Geordnetes 4x4-Dithering vor der Reduktion auf RGB565 (R/B 5 Bit, G 6 Bit)."""
+    """Ordered 4x4 dithering before reduction to RGB565 (R/B 5 bits, G 6 bits)."""
     h, w, _ = frame.shape
     t = np.tile(_BAYER4, (-(-h // 4), -(-w // 4)))[:h, :w]
     out = frame.astype(np.float32) + t[..., None] * np.array([8, 4, 8], np.float32)
@@ -121,7 +121,7 @@ def parse_gamma(s):
         vals *= 3
     if len(vals) != 3 or any(v <= 0 for v in vals):
         raise argparse.ArgumentTypeError(
-            "Format: G oder R,G,B mit Werten > 0, z.B. 2.2 oder 2.4,1.8,2.4")
+            "format: G or R,G,B with values > 0, e.g. 2.2 or 2.4,1.8,2.4")
     return tuple(vals)
 
 
@@ -134,7 +134,7 @@ def parse_black(s):
         vals *= 3
     if len(vals) != 3 or any(not 0 <= v <= 254 for v in vals):
         raise argparse.ArgumentTypeError(
-            "Format: N oder R,G,B mit 0 <= N <= 254, z.B. 22,16,0")
+            "format: N or R,G,B with 0 <= N <= 254, e.g. 22,16,0")
     return tuple(vals)
 
 
@@ -147,12 +147,12 @@ def parse_limit(s):
         vals *= 3
     if len(vals) != 3 or any(not 1 <= v <= 255 for v in vals):
         raise argparse.ArgumentTypeError(
-            "Format: N oder R,G,B mit 1 <= N <= 255, z.B. 85")
+            "format: N or R,G,B with 1 <= N <= 255, e.g. 85")
     return tuple(vals)
 
 
 def encode_frame(frame, info, invert, dither=False):
-    """RGB-Frame (HxWx3 uint8) -> Rohbytes fuer den Framebuffer."""
+    """RGB frame (HxWx3 uint8) -> raw bytes for the framebuffer."""
     if invert:
         frame = 255 - frame
     if dither and info.bpp == 16:
@@ -166,12 +166,12 @@ def encode_frame(frame, info, invert, dither=False):
             | (b.astype(np.uint16) >> 3)
         )
         row = px.astype("<u2").view(np.uint8).reshape(h, w * 2)
-    elif info.bpp == 32:  # BGRA (z.B. HDMI-Framebuffer)
+    elif info.bpp == 32:  # BGRA (e.g. HDMI framebuffer)
         px = np.empty((h, w, 4), np.uint8)
         px[..., 0], px[..., 1], px[..., 2], px[..., 3] = b, g, r, 255
         row = px.reshape(h, w * 4)
     else:
-        raise ValueError(f"bpp {info.bpp} nicht unterstuetzt (nur 16/32)")
+        raise ValueError(f"bpp {info.bpp} not supported (only 16/32)")
     if info.stride == row.shape[1]:
         return row.tobytes()
     out = np.zeros((h, info.stride), np.uint8)
@@ -192,7 +192,7 @@ class Display:
         length = info.stride * info.height
         self._f = open(dev, "r+b")
         if stat.S_ISREG(os.fstat(self._f.fileno()).st_mode):
-            self._f.truncate(length)  # Test: normale Datei als Fake-FB
+            self._f.truncate(length)  # tests: regular file as fake framebuffer
         self._m = mmap.mmap(self._f.fileno(), length)
 
     def show(self, frame):
@@ -201,7 +201,7 @@ class Display:
         self._m[: len(data)] = data
 
     def blank(self):
-        """Tiefstes Schwarz des Panels: Rohwert 0, ohne Gamma/Limit/Black/Dither."""
+        """Deepest black of the panel: raw value 0, without gamma/limit/black/dither."""
         w, h = self.size
         data = encode_frame(np.zeros((h, w, 3), np.uint8), self.info, self.invert)
         self._m[: len(data)] = data
@@ -212,14 +212,14 @@ class Display:
 
 
 # --------------------------------------------------------------------------
-# Bilder
+# Images
 # --------------------------------------------------------------------------
 def natural_key(s):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
 
 
 def list_images(directory):
-    """JPEGs, natuerlich sortiert (img_2 vor img_10); leer, wenn Stick fehlt."""
+    """JPEGs, naturally sorted (img_2 before img_10); empty if the stick is missing."""
     try:
         names = os.listdir(directory)
     except OSError:
@@ -233,13 +233,13 @@ def list_images(directory):
 
 def playlist(directory, shuffle, rng, loop=True, empty_wait=5.0,
              sleep=time.sleep, log=log):
-    """Endlos-Generator; liest das Verzeichnis pro Runde neu ein."""
+    """Endless generator; rescans the directory every round."""
     while True:
         files = list_images(directory)
         if not files:
             if not loop:
                 return
-            log(f"Keine Bilder in {directory} (Stick nicht gemountet?) - warte")
+            log(f"No images in {directory} (stick not mounted?) - waiting")
             sleep(empty_wait)
             continue
         if shuffle:
@@ -250,11 +250,11 @@ def playlist(directory, shuffle, rng, loop=True, empty_wait=5.0,
 
 
 def load_image(path, size, fill=False):
-    """Bild laden und auf Displaygroesse bringen -> HxWx3 uint8."""
+    """Load an image and fit it to the display size -> HxWx3 uint8."""
     w, h = size
     m = max(w, h)
     with Image.open(path) as im:
-        im.draft("RGB", (m, m))  # schnelles Herunterskalieren im JPEG-Decoder
+        im.draft("RGB", (m, m))  # fast downscaling inside the JPEG decoder
         im = ImageOps.exif_transpose(im).convert("RGB")
     if fill:
         im = ImageOps.fit(im, (w, h), Image.LANCZOS)
@@ -267,9 +267,9 @@ def load_image(path, size, fill=False):
 
 
 # --------------------------------------------------------------------------
-# Uebergaenge: make_xxx(rng, w, h) -> f(a, b, p), p in (0,1) -> Frame.
-# Zufallsparameter (Richtung, Mittelpunkt, Blockgroesse ...) werden pro
-# Aufruf der Factory gewuerfelt, damit nie zwei Uebergaenge identisch sind.
+# Transitions: make_xxx(rng, w, h) -> f(a, b, p), p in (0,1) -> frame.
+# Random parameters (direction, center, block size ...) are rolled on each
+# call of the factory, so that no two transitions are ever identical.
 # --------------------------------------------------------------------------
 def _smooth(p):
     return p * p * (3 - 2 * p)
@@ -283,7 +283,7 @@ def _mix(a, b, p):
 
 
 def _blend(a, b, mask):
-    """mask: Float 0..1, (H,W) oder broadcastbar; 1 = b."""
+    """mask: float 0..1, (H,W) or broadcastable; 1 = b."""
     af = a.astype(np.float32)
     out = af + (b.astype(np.float32) - af) * mask[..., None]
     return (out + 0.5).astype(np.uint8)
@@ -299,7 +299,7 @@ def make_fade(rng, w, h):
 
 
 def make_wipe(rng, w, h):
-    """Weiche Kante, die in einer von 8 Richtungen ueber das Bild laeuft."""
+    """Soft edge that sweeps across the image in one of 8 directions."""
     ang = math.radians(rng.choice([0, 45, 90, 135, 180, 225, 270, 315]))
     xs, ys = _grid(w, h)
     c = xs * math.cos(ang) + ys * math.sin(ang)
@@ -312,7 +312,7 @@ def make_wipe(rng, w, h):
 
 
 def make_push(rng, w, h):
-    """Neues Bild schiebt das alte aus dem Bild."""
+    """The new image pushes the old one out of the frame."""
     d = rng.choice(["left", "right", "up", "down"])
 
     def run(a, b, p):
@@ -329,7 +329,7 @@ def make_push(rng, w, h):
 
 
 def make_blinds(rng, w, h):
-    """Jalousie: n Streifen oeffnen sich gleichzeitig."""
+    """Venetian blinds: n stripes open simultaneously."""
     vertical = rng.random() < 0.5
     n = rng.choice([6, 8, 10, 12, 16])
     size = w if vertical else h
@@ -343,7 +343,7 @@ def make_blinds(rng, w, h):
 
 
 def make_dissolve(rng, w, h):
-    """Zufaellige Bloecke (Mosaik), Zeilen (TV-Raster) oder Spalten."""
+    """Random blocks (mosaic), rows (TV scanlines) or columns."""
     bh, bw = rng.choice([(8, 8), (16, 16), (32, 32), (2, w), (h, 6)])
     ny, nx = -(-h // bh), -(-w // bw)
     gen = np.random.default_rng(rng.getrandbits(32))
@@ -356,7 +356,7 @@ def make_dissolve(rng, w, h):
 
 
 def make_iris(rng, w, h):
-    """Kreis waechst aus zufaelligem Punkt (oder schrumpft zum neuen Bild)."""
+    """A circle grows from a random point (or shrinks to reveal the new image)."""
     cx, cy = w * rng.uniform(0.25, 0.75), h * rng.uniform(0.25, 0.75)
     reverse = rng.random() < 0.5
     xs, ys = _grid(w, h)
@@ -374,7 +374,7 @@ def make_iris(rng, w, h):
 
 
 def make_zoom(rng, w, h):
-    """Altes Bild zoomt weg / neues Bild zoomt heran, dabei Ueberblendung."""
+    """Old image zooms away / new image zooms in, cross-fading meanwhile."""
     zoom_out_old = rng.random() < 0.5
     amount = 0.5
 
@@ -393,7 +393,7 @@ def make_zoom(rng, w, h):
 
 
 def make_split(rng, w, h):
-    """Vorhang: oeffnet von der Mitte nach aussen (oder von aussen zur Mitte)."""
+    """Curtain: opens from the center outwards (or from the edges to the center)."""
     vertical = rng.random() < 0.5
     edges_first = rng.random() < 0.5
     size = w if vertical else h
@@ -422,9 +422,9 @@ TRANSITIONS = {
 
 
 def make_transition(name, rng, size):
-    """Factory + Garantie: p<=0 liefert exakt a, p>=1 exakt b."""
+    """Factory + guarantee: p<=0 returns exactly a, p>=1 exactly b."""
     if name not in TRANSITIONS:
-        raise ValueError(f"Unbekannter Uebergang: {name}")
+        raise ValueError(f"Unknown transition: {name}")
     fn = TRANSITIONS[name](rng, size[0], size[1])
 
     def run(a, b, p):
@@ -437,7 +437,7 @@ def make_transition(name, rng, size):
 
 
 def run_transition(display, fn, a, b, duration, clock=time.monotonic):
-    """Zeitgesteuert: wie viele Frames es werden, bestimmt die SPI-Bandbreite."""
+    """Time-driven: the SPI bandwidth decides how many frames there will be."""
     if duration <= 0:
         display.show(b)
         return
@@ -451,13 +451,13 @@ def run_transition(display, fn, a, b, duration, clock=time.monotonic):
 
 
 # --------------------------------------------------------------------------
-# Hauptschleife
+# Main loop
 # --------------------------------------------------------------------------
 def make_testcard(w, h, kind="bars"):
-    """Diagnose-Testkarte.
+    """Diagnostic test card.
 
-    bars : Farbbalken (oben) + 16 Graustufen (unten)
-    ramps: je 16 Stufen fuer Grau, Rot, Gruen, Blau (Zeilen von oben nach unten)
+    bars : color bars (top) + 16 gray levels (bottom)
+    ramps: 16 steps each for gray, red, green, blue (rows from top to bottom)
     """
     img = np.zeros((h, w, 3), np.uint8)
     steps = ((np.arange(w) * 16 // w) * 17).astype(np.uint8)
@@ -488,22 +488,22 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
     def load(path):
         try:
             return path, load_image(path, size, fill)
-        except Exception as e:  # kaputte/halb kopierte Datei
-            log(f"Ueberspringe {path}: {e}")
+        except Exception as e:  # broken / partially copied file
+            log(f"Skipping {path}: {e}")
             return path, None
 
     def submit():
         p = next(paths, None)
         return None if p is None else loader.submit(load, p)
 
-    prev = np.zeros((h, w, 3), np.uint8)  # Start aus Schwarz
+    prev = np.zeros((h, w, 3), np.uint8)  # start from black
     prev_path = None
     last = None
     fut = submit()
     try:
         while fut is not None:
             path, img = fut.result()
-            fut = submit()  # naechstes Bild waehrend der Haltezeit laden
+            fut = submit()  # load the next image during the hold time
             if img is None:
                 continue
             if path != prev_path:
@@ -513,7 +513,7 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
                 run_transition(display, fn, prev, img, duration, clock)
                 prev, prev_path = img, path
             sleep(hold)
-            while paused():  # Bild bleibt stehen, bis erneut SIGUSR1 kommt
+            while paused():  # image stays until the next SIGUSR1 arrives
                 sleep(0.2)
     finally:
         loader.shutdown(wait=False, cancel_futures=True)
@@ -522,50 +522,51 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
 def parse_size(s):
     m = re.fullmatch(r"(\d+)x(\d+)", s)
     if not m:
-        raise argparse.ArgumentTypeError("Format: BREITExHOEHE, z.B. 480x320")
+        raise argparse.ArgumentTypeError("format: WIDTHxHEIGHT, e.g. 480x320")
     return int(m.group(1)), int(m.group(2))
 
 
 def parse_args(argv, env=os.environ):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("directory", nargs="?", default=env.get("BILDER_DIR", DEFAULT_DIR))
+    ap.add_argument("directory", nargs="?",
+                    default=env.get("IMAGE_DIR", env.get("BILDER_DIR", DEFAULT_DIR)))
     ap.add_argument("--fb", default=env.get("FB_DEVICE", DEFAULT_FB))
     ap.add_argument("--hold", type=float, default=float(env.get("HOLD", 10)),
-                    help="Sekunden pro Bild (Standard 10)")
+                    help="seconds per image (default 10)")
     ap.add_argument("--duration", type=float,
                     default=float(env.get("DURATION", 1.2)),
-                    help="Dauer des Uebergangs in Sekunden (Standard 1.2)")
-    ap.add_argument("--shuffle", action="store_true", help="Zufaellige Reihenfolge")
+                    help="transition duration in seconds (default 1.2)")
+    ap.add_argument("--shuffle", action="store_true", help="random order")
     ap.add_argument("--fill", action="store_true",
-                    help="Bild zuschneiden statt schwarze Raender")
+                    help="crop the image instead of black borders")
     ap.add_argument("--transitions", default=",".join(TRANSITIONS),
-                    help="Komma-Liste, Standard: alle (%s)" % ",".join(TRANSITIONS))
+                    help="comma-separated list, default: all (%s)" % ",".join(TRANSITIONS))
     ap.add_argument("--invert", choices=["auto", "on", "off"], default="auto")
-    ap.add_argument("--size", type=parse_size, help="Override, z.B. 480x320")
-    ap.add_argument("--bpp", type=int, help="Override, z.B. 16")
+    ap.add_argument("--size", type=parse_size, help="override, e.g. 480x320")
+    ap.add_argument("--bpp", type=int, help="override, e.g. 16")
     ap.add_argument("--gamma", type=parse_gamma, default=env.get("GAMMA", "1.0"),
-                    help="Tonwertkurve in**gamma: ein Wert oder R,G,B "
-                         "(z.B. 2.4,1.8,2.4); >1 = Mitteltoene dunkler")
+                    help="tone curve in**gamma: one value or R,G,B "
+                         "(e.g. 2.4,1.8,2.4); >1 = darker midtones")
     ap.add_argument("--limit", type=parse_limit, default=env.get("LIMIT", "255"),
-                    help="Hoechster Rohwert (1..255), ein Wert oder R,G,B; "
-                         "bei gefalteter Panel-Kennlinie z.B. 85")
+                    help="highest raw value (1..255), one value or R,G,B; "
+                         "e.g. 85 for a folded panel response curve")
     ap.add_argument("--black", type=parse_black, default=env.get("BLACK", "0"),
-                    help="Rohwert fuer Schwarz, ein Wert oder R,G,B (z.B. 22,16,0): "
-                         "gleicht violettes Schwarz aus")
+                    help="raw value for black, one value or R,G,B (e.g. 22,16,0): "
+                         "compensates purple-tinted black")
     ap.add_argument("--dither", action="store_true",
-                    help="Geordnetes Dithering vor RGB565 (gegen Banding)")
+                    help="ordered dithering before RGB565 (against banding)")
     ap.add_argument("--testcard", nargs="?", const="bars", default=None,
                     choices=["bars", "ramps"],
-                    help="Nur Testkarte anzeigen (bars oder ramps)")
-    ap.add_argument("--once", action="store_true", help="Nur eine Runde (Test)")
+                    help="only show a test card (bars or ramps)")
+    ap.add_argument("--once", action="store_true", help="only one round (testing)")
     args = ap.parse_args(argv)
     names = [t.strip() for t in args.transitions.split(",") if t.strip()]
     bad = [t for t in names if t not in TRANSITIONS]
     if bad or not names:
-        ap.error("Unbekannter Uebergang: %s" % ",".join(bad or ["(leer)"]))
+        ap.error("Unknown transition: %s" % ",".join(bad or ["(empty)"]))
     args.transitions = names
     if any(b >= li for b, li in zip(args.black, args.limit)):
-        ap.error("--black muss kleiner als --limit sein")
+        ap.error("--black must be less than --limit")
     return args
 
 
@@ -578,8 +579,8 @@ def main(argv=None):
         try:
             info = read_fb_info(args.fb)
         except OSError as e:
-            log(f"Framebuffer-Geometrie von {args.fb} nicht lesbar ({e}); "
-                f"--size/--bpp angeben. Tipp: dmesg | grep -i fb_ili9486")
+            log(f"Cannot read framebuffer geometry of {args.fb} ({e}); "
+                f"pass --size/--bpp. Hint: dmesg | grep -i fb_ili9486")
             return 2
         if args.bpp:
             info = info._replace(bpp=args.bpp, stride=info.width * args.bpp // 8)
@@ -592,11 +593,11 @@ def main(argv=None):
 
     def toggle(*_):
         paused.clear() if paused.is_set() else paused.set()
-        log("PAUSE" if paused.is_set() else "WEITER")
+        log("PAUSED" if paused.is_set() else "RESUMED")
 
     signal.signal(signal.SIGUSR1, toggle)
     rng = random.Random()
-    log(f"Diashow {args.directory} -> {args.fb} {info.width}x{info.height} "
+    log(f"Slideshow {args.directory} -> {args.fb} {info.width}x{info.height} "
         f"{info.bpp}bpp invert={invert} hold={args.hold}s")
     try:
         if args.testcard:

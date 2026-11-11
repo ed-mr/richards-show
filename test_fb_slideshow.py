@@ -33,7 +33,7 @@ class FakeDisplay:
         self.frames.append(frame.copy())
 
 
-# ---------------------------------------------------------------- Bildliste
+# ---------------------------------------------------------------- image list
 def test_list_images_natural_order_and_filter(tmp_path):
     for n in ["a_10.jpg", "a_2.jpg", "b.JPEG", "c.png", ".hidden.jpg", "d.txt"]:
         (tmp_path / n).write_bytes(b"x")
@@ -95,7 +95,7 @@ def test_playlist_once_single_round(tmp_path):
     assert len(list(fbs.playlist(str(tmp_path), False, random.Random(0), loop=False))) == 2
 
 
-# ------------------------------------------------- Framebuffer / Kodierung
+# ------------------------------------------------- framebuffer / encoding
 def test_encode_rgb565_exact():
     frame = np.array([[[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]], np.uint8)
     out = fbs.encode_frame(frame, fbs.FbInfo(4, 1, 16, 8), False)
@@ -174,7 +174,7 @@ def test_display_blank_respects_invert(tmp_path):
         d.close()
 
 
-# --------------------------------------------------------------- Bild laden
+# --------------------------------------------------------------- image loading
 def test_load_image_contain_pillarbox(tmp_path):
     p = tmp_path / "p.jpg"
     mk_jpg(p, (255, 0, 0), size=(40, 60))
@@ -196,13 +196,13 @@ def test_load_image_applies_exif_rotation(tmp_path):
     p = tmp_path / "r.jpg"
     im = Image.new("RGB", (60, 40), (255, 0, 0))
     ex = im.getexif()
-    ex[0x0112] = 6  # 90 Grad -> Hochformat
+    ex[0x0112] = 6  # 90 degrees -> portrait
     im.save(p, "JPEG", exif=ex)
     a = fbs.load_image(str(p), (W, H))
-    assert a[0, 0].tolist() == [0, 0, 0]  # Pillarbox => wurde gedreht
+    assert a[0, 0].tolist() == [0, 0, 0]  # pillarbox => was rotated
 
 
-# ---------------------------------------------------------------- Uebergaenge
+# ---------------------------------------------------------------- transitions
 @pytest.mark.parametrize("name", sorted(fbs.TRANSITIONS))
 def test_transition_endpoints_exact_for_many_random_variants(name):
     a, b = noise(1), noise(2)
@@ -278,7 +278,7 @@ def test_run_transition_zero_duration_shows_only_b():
     assert len(d.frames) == 1 and np.array_equal(d.frames[0], b)
 
 
-# ------------------------------------------------------------ Hauptschleife
+# ------------------------------------------------------------ main loop
 def run_show(paths, **kw):
     d = FakeDisplay()
     sleeps = []
@@ -325,7 +325,7 @@ def test_slideshow_first_transition_starts_from_black(tmp_path):
 
 def test_slideshow_skips_broken_image(tmp_path):
     mk_jpg(tmp_path / "1.jpg", (255, 0, 0), size=(W, H))
-    (tmp_path / "2.jpg").write_bytes(b"kein jpeg")
+    (tmp_path / "2.jpg").write_bytes(b"not a jpeg")
     mk_jpg(tmp_path / "3.jpg", (0, 0, 255), size=(W, H))
     d, sleeps = run_show(fbs.list_images(str(tmp_path)))
     assert len(d.frames) == 2 and sleeps == [7, 7]
@@ -398,11 +398,11 @@ def test_main_missing_geometry_returns_2(tmp_path):
 def test_main_empty_dir_once_returns_0(tmp_path):
     fb = tmp_path / "fb"
     fb.write_bytes(b"")
-    assert fbs.main([str(tmp_path / "leer"), "--fb", str(fb), "--size", "48x32",
+    assert fbs.main([str(tmp_path / "empty"), "--fb", str(fb), "--size", "48x32",
                      "--invert", "off", "--once"]) == 0
 
 
-# ------------------------------------------------------------ Pause / Testkarte
+# ------------------------------------------------------------ pause / test card
 def test_slideshow_pause_holds_until_resumed(tmp_path):
     for i in (1, 2, 3):
         mk_jpg(tmp_path / f"{i}.jpg", (255, 0, 0), size=(W, H))
@@ -428,7 +428,7 @@ def test_slideshow_pause_shows_no_new_image_while_paused(tmp_path):
 
     fbs.slideshow(d, fbs.list_images(str(tmp_path)), 1, 0, False, ["fade"],
                   random.Random(0), sleep=lambda s: None, paused=paused)
-    assert counts[:3] == [1, 1, 1]  # solange pausiert: weiter nur Bild 1
+    assert counts[:3] == [1, 1, 1]  # while paused: still only image 1
 
 
 def test_testcard_bars_and_ramp():
@@ -456,7 +456,7 @@ def test_gamma_values_endpoints_and_monotonic():
     out = fbs.apply_gamma(ramp, 2.0)[0, :, 0]
     assert out[0] == 0 and out[255] == 255 and out[128] == 64
     assert (np.diff(out.astype(int)) >= 0).all()
-    assert fbs.apply_gamma(ramp, 0.5)[0, 128, 0] == 181  # <1 hellt auf
+    assert fbs.apply_gamma(ramp, 0.5)[0, 128, 0] == 181  # <1 brightens
 
 
 def test_display_applies_gamma_before_encoding(tmp_path):
@@ -521,7 +521,7 @@ def test_parse_args_testcard_modes():
     assert fbs.parse_args(["--testcard", "--gamma", "2"], env={}).testcard == "bars"
 
 
-# ------------------------------------------------------- Limit / Dithering
+# ------------------------------------------------------- limit / dithering
 def _ramp():
     return np.arange(256, dtype=np.uint8).reshape(1, 256, 1).repeat(3, axis=2)
 
@@ -565,7 +565,7 @@ def test_dither_preserves_mean_intensity_and_extremes():
     r, g, b = _decode565(fbs.encode_frame(flat, info, False, dither=True), 16, 16)
     assert abs(r.mean() * 8 - 100) <= 0.5 and abs(b.mean() * 8 - 100) <= 0.5
     assert abs(g.mean() * 4 - 100) <= 0.25
-    assert len(set(r.flatten().tolist())) == 2  # zwei benachbarte Stufen
+    assert len(set(r.flatten().tolist())) == 2  # two adjacent levels
     for v, rmax, gmax in ((0, 0, 0), (255, 31, 63)):
         f = np.full((16, 16, 3), v, np.uint8)
         r, g, b = _decode565(fbs.encode_frame(f, info, False, dither=True), 16, 16)
@@ -600,7 +600,7 @@ def test_display_applies_limit_then_dither(tmp_path):
     d.close()
 
 
-# ------------------------------------------------------------- Schwarzpegel
+# ------------------------------------------------------------- black level
 def test_black_offset_endpoints_and_monotonic():
     out = fbs.apply_gamma(_ramp(), 1.0, 85, 20)[0, :, 0]
     assert out[0] == 20 and out[255] == 85
@@ -655,7 +655,7 @@ def test_blank_uses_raw_black_ignoring_corrections(tmp_path):
     d = fbs.Display(str(fb), info, invert=False, gamma=2.0, limit=85,
                     black=(0, 4, 0), dither=True)
     d.show(np.zeros((2, 4, 3), np.uint8))
-    assert fb.read_bytes() != b"\x00" * 16  # Korrektur hebt Schwarz an (G=4)
+    assert fb.read_bytes() != b"\x00" * 16  # correction lifts black (G=4)
     d.blank()
     assert fb.read_bytes() == b"\x00" * 16
 
