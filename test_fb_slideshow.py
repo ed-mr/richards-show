@@ -1,0 +1,669 @@
+import importlib.util
+import itertools
+import pathlib
+import random
+
+import numpy as np
+import pytest
+from PIL import Image
+
+_spec = importlib.util.spec_from_file_location(
+    "fbs", pathlib.Path(__file__).with_name("fb-slideshow.py"))
+fbs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fbs)
+
+W, H = 48, 32
+
+
+def mk_jpg(path, color, size=(60, 40)):
+    Image.new("RGB", size, color).save(path, "JPEG", quality=95)
+
+
+def noise(seed):
+    return np.random.default_rng(seed).integers(0, 256, (H, W, 3), dtype=np.uint8)
+
+
+class FakeDisplay:
+    size = (W, H)
+
+    def __init__(self):
+        self.frames = []
+
+    def show(self, frame):
+        self.frames.append(frame.copy())
+
+
+# ---------------------------------------------------------------- Bildliste
+def test_list_images_natural_order_and_filter(tmp_path):
+    for n in ["a_10.jpg", "a_2.jpg", "b.JPEG", "c.png", ".hidden.jpg", "d.txt"]:
+        (tmp_path / n).write_bytes(b"x")
+    got = [pathlib.Path(p).name for p in fbs.list_images(str(tmp_path))]
+    assert got == ["a_2.jpg", "a_10.jpg", "b.JPEG"]
+
+
+def test_list_images_missing_dir():
+    assert fbs.list_images("/nonexistent/stick") == []
+
+
+def test_playlist_loops_in_order(tmp_path):
+    for n in "abc":
+        (tmp_path / f"{n}.jpg").write_bytes(b"x")
+    got = [pathlib.Path(p).name for p in itertools.islice(
+        fbs.playlist(str(tmp_path), False, random.Random(0)), 7)]
+    assert got == ["a.jpg", "b.jpg", "c.jpg", "a.jpg", "b.jpg", "c.jpg", "a.jpg"]
+
+
+def test_playlist_rescans_each_round(tmp_path):
+    (tmp_path / "a.jpg").write_bytes(b"x")
+    (tmp_path / "b.jpg").write_bytes(b"x")
+    gen = fbs.playlist(str(tmp_path), False, random.Random(0))
+    assert [pathlib.Path(next(gen)).name for _ in range(2)] == ["a.jpg", "b.jpg"]
+    (tmp_path / "c.jpg").write_bytes(b"x")
+    assert [pathlib.Path(next(gen)).name for _ in range(3)] == ["a.jpg", "b.jpg", "c.jpg"]
+
+
+def test_playlist_shuffle_is_permutation_per_round(tmp_path):
+    names = [f"{i}.jpg" for i in range(6)]
+    for n in names:
+        (tmp_path / n).write_bytes(b"x")
+    gen = fbs.playlist(str(tmp_path), True, random.Random(1))
+    for _ in range(3):
+        rnd = [pathlib.Path(next(gen)).name for _ in range(6)]
+        assert sorted(rnd) == sorted(names)
+
+
+def test_playlist_empty_waits_and_retries(tmp_path):
+    calls = []
+
+    def sleep(s):
+        calls.append(s)
+        raise RuntimeError("stop")
+
+    with pytest.raises(RuntimeError):
+        next(fbs.playlist(str(tmp_path), False, random.Random(0),
+                          empty_wait=3, sleep=sleep, log=lambda m: None))
+    assert calls == [3]
+
+
+def test_playlist_once_empty_ends(tmp_path):
+    assert list(fbs.playlist(str(tmp_path), False, random.Random(0), loop=False)) == []
+
+
+def test_playlist_once_single_round(tmp_path):
+    for n in "ab":
+        (tmp_path / f"{n}.jpg").write_bytes(b"x")
+    assert len(list(fbs.playlist(str(tmp_path), False, random.Random(0), loop=False))) == 2
+
+
+# ------------------------------------------------- Framebuffer / Kodierung
+def test_encode_rgb565_exact():
+    frame = np.array([[[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]]], np.uint8)
+    out = fbs.encode_frame(frame, fbs.FbInfo(4, 1, 16, 8), False)
+    assert out == b"\x00\xf8" b"\xe0\x07" b"\x1f\x00" b"\xff\xff"
+
+
+def test_encode_invert_black_becomes_white():
+    frame = np.zeros((2, 2, 3), np.uint8)
+    out = fbs.encode_frame(frame, fbs.FbInfo(2, 2, 16, 4), True)
+    assert out == b"\xff" * 8
+
+
+def test_encode_32bpp_bgra():
+    frame = np.array([[[10, 20, 30]]], np.uint8)
+    assert fbs.encode_frame(frame, fbs.FbInfo(1, 1, 32, 4), False) == bytes([30, 20, 10, 255])
+
+
+def test_encode_respects_stride_padding():
+    frame = np.full((2, 2, 3), 255, np.uint8)
+    out = fbs.encode_frame(frame, fbs.FbInfo(2, 2, 16, 8), False)
+    assert len(out) == 16
+    assert out[:4] == b"\xff" * 4 and out[4:8] == b"\x00" * 4
+    assert out[8:12] == b"\xff" * 4 and out[12:] == b"\x00" * 4
+
+
+def test_encode_unsupported_bpp():
+    with pytest.raises(ValueError):
+        fbs.encode_frame(np.zeros((1, 1, 3), np.uint8), fbs.FbInfo(1, 1, 24, 3), False)
+
+
+def test_detect_invert(tmp_path):
+    (tmp_path / "waveshare35a@0").mkdir()
+    assert fbs.detect_invert(str(tmp_path)) is True
+    other = tmp_path / "x"
+    other.mkdir()
+    (other / "tft35a@0").mkdir()
+    assert fbs.detect_invert(str(other)) is False
+    empty = tmp_path / "y"
+    empty.mkdir()
+    assert fbs.detect_invert(str(empty)) is False
+    assert fbs.detect_invert(str(tmp_path / "missing")) is False
+
+
+def test_read_fb_info_from_sysfs(tmp_path):
+    d = tmp_path / "fb1"
+    d.mkdir()
+    (d / "virtual_size").write_text("480,320\n")
+    (d / "bits_per_pixel").write_text("16\n")
+    (d / "stride").write_text("960\n")
+    assert fbs.read_fb_info("/dev/fb1", str(tmp_path)) == fbs.FbInfo(480, 320, 16, 960)
+    (d / "stride").unlink()
+    assert fbs.read_fb_info("/dev/fb1", str(tmp_path)).stride == 960
+
+
+def test_display_writes_frame_to_file(tmp_path):
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    info = fbs.FbInfo(4, 2, 16, 8)
+    d = fbs.Display(str(fb), info, invert=False)
+    frame = np.zeros((2, 4, 3), np.uint8)
+    frame[0, 0] = (255, 0, 0)
+    d.show(frame)
+    assert fb.read_bytes() == fbs.encode_frame(frame, info, False)
+    assert fb.stat().st_size == 16
+    d.close()
+
+
+def test_display_blank_respects_invert(tmp_path):
+    for invert, byte in ((False, b"\x00"), (True, b"\xff")):
+        fb = tmp_path / f"fb{invert}"
+        fb.write_bytes(b"")
+        d = fbs.Display(str(fb), fbs.FbInfo(4, 2, 16, 8), invert)
+        d.show(np.full((2, 4, 3), 123, np.uint8))
+        d.blank()
+        assert fb.read_bytes() == byte * 16
+        d.close()
+
+
+# --------------------------------------------------------------- Bild laden
+def test_load_image_contain_pillarbox(tmp_path):
+    p = tmp_path / "p.jpg"
+    mk_jpg(p, (255, 0, 0), size=(40, 60))
+    a = fbs.load_image(str(p), (W, H))
+    assert a.shape == (H, W, 3) and a.dtype == np.uint8
+    assert a[0, 0].tolist() == [0, 0, 0]
+    assert a[H // 2, W // 2][0] > 200 and a[H // 2, W // 2][1] < 60
+
+
+def test_load_image_fill_covers_everything(tmp_path):
+    p = tmp_path / "p.jpg"
+    mk_jpg(p, (255, 0, 0), size=(40, 60))
+    a = fbs.load_image(str(p), (W, H), fill=True)
+    assert a.shape == (H, W, 3)
+    assert (a[..., 0] > 200).all()
+
+
+def test_load_image_applies_exif_rotation(tmp_path):
+    p = tmp_path / "r.jpg"
+    im = Image.new("RGB", (60, 40), (255, 0, 0))
+    ex = im.getexif()
+    ex[0x0112] = 6  # 90 Grad -> Hochformat
+    im.save(p, "JPEG", exif=ex)
+    a = fbs.load_image(str(p), (W, H))
+    assert a[0, 0].tolist() == [0, 0, 0]  # Pillarbox => wurde gedreht
+
+
+# ---------------------------------------------------------------- Uebergaenge
+@pytest.mark.parametrize("name", sorted(fbs.TRANSITIONS))
+def test_transition_endpoints_exact_for_many_random_variants(name):
+    a, b = noise(1), noise(2)
+    for seed in range(12):
+        t = fbs.make_transition(name, random.Random(seed), (W, H))
+        assert np.array_equal(t(a, b, 0.0), a)
+        assert np.array_equal(t(a, b, 1.0), b)
+        for p in (0.1, 0.5, 0.9):
+            out = t(a, b, p)
+            assert out.shape == (H, W, 3) and out.dtype == np.uint8
+
+
+@pytest.mark.parametrize("name", sorted(fbs.TRANSITIONS))
+def test_transition_progresses_monotonically(name):
+    a, b = np.zeros((H, W, 3), np.uint8), np.full((H, W, 3), 255, np.uint8)
+    for seed in range(8):
+        t = fbs.make_transition(name, random.Random(seed), (W, H))
+        means = [float(t(a, b, p).mean()) for p in (0.1, 0.3, 0.5, 0.7, 0.9)]
+        assert means == sorted(means), (name, seed, means)
+        assert 0 < means[2] < 255
+        assert not np.array_equal(t(a, b, 0.5), a)
+        assert not np.array_equal(t(a, b, 0.5), b)
+
+
+@pytest.mark.parametrize("name", sorted(fbs.TRANSITIONS))
+def test_transition_deterministic_per_seed(name):
+    a, b = noise(1), noise(2)
+    t1 = fbs.make_transition(name, random.Random(5), (W, H))
+    t2 = fbs.make_transition(name, random.Random(5), (W, H))
+    assert np.array_equal(t1(a, b, 0.5), t2(a, b, 0.5))
+
+
+@pytest.mark.parametrize("name", ["wipe", "push", "iris", "dissolve", "blinds", "split", "zoom"])
+def test_transition_varies_between_runs(name):
+    a, b = noise(1), noise(2)
+    outs = {fbs.make_transition(name, random.Random(s), (W, H))(a, b, 0.5).tobytes()
+            for s in range(30)}
+    assert len(outs) > 1
+
+
+def test_make_transition_unknown():
+    with pytest.raises(ValueError):
+        fbs.make_transition("nope", random.Random(0), (W, H))
+
+
+def test_run_transition_time_based_ends_on_b():
+    class Clock:
+        t = -0.1
+
+        def __call__(self):
+            self.t += 0.1
+            return self.t
+
+    seen = []
+
+    def spy(a, b, p):
+        seen.append(p)
+        return a
+
+    a, b = noise(1), noise(2)
+    d = FakeDisplay()
+    fbs.run_transition(d, spy, a, b, 1.0, clock=Clock())
+    assert len(seen) >= 5
+    assert seen == sorted(seen) and all(0 <= p <= 1 for p in seen)
+    assert np.array_equal(d.frames[-1], b)
+    assert len(d.frames) == len(seen) + 1
+
+
+def test_run_transition_zero_duration_shows_only_b():
+    a, b = noise(1), noise(2)
+    d = FakeDisplay()
+    fbs.run_transition(d, lambda *_: a, a, b, 0)
+    assert len(d.frames) == 1 and np.array_equal(d.frames[0], b)
+
+
+# ------------------------------------------------------------ Hauptschleife
+def run_show(paths, **kw):
+    d = FakeDisplay()
+    sleeps = []
+    fbs.slideshow(d, paths, kw.get("hold", 7), kw.get("duration", 0), False,
+                  kw.get("transitions", ["fade"]), random.Random(0),
+                  sleep=sleeps.append)
+    return d, sleeps
+
+
+def test_slideshow_shows_images_in_order_and_holds(tmp_path):
+    cols = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    for i, c in enumerate(cols, 1):
+        mk_jpg(tmp_path / f"{i}.jpg", c, size=(W, H))
+    d, sleeps = run_show(fbs.list_images(str(tmp_path)))
+    assert sleeps == [7, 7, 7]
+    assert len(d.frames) == 3
+    for f, ch in zip(d.frames, range(3)):
+        assert f[..., ch].mean() > 200 and f[..., (ch + 1) % 3].mean() < 60
+
+
+def test_slideshow_first_transition_starts_from_black(tmp_path):
+    mk_jpg(tmp_path / "1.jpg", (255, 0, 0), size=(W, H))
+    seen = []
+    orig = fbs.make_transition
+
+    def spy(name, rng, size):
+        fn = orig(name, rng, size)
+
+        def run(a, b, p):
+            seen.append(a.copy())
+            return fn(a, b, p)
+        return run
+
+    fbs.make_transition, saved = spy, fbs.make_transition
+    try:
+        d = FakeDisplay()
+        clock = iter([0.0, 0.5, 2.0]).__next__
+        fbs.slideshow(d, fbs.list_images(str(tmp_path)), 1, 1.0, False,
+                      ["fade"], random.Random(0), sleep=lambda s: None, clock=clock)
+    finally:
+        fbs.make_transition = saved
+    assert seen and not seen[0].any()
+
+
+def test_slideshow_skips_broken_image(tmp_path):
+    mk_jpg(tmp_path / "1.jpg", (255, 0, 0), size=(W, H))
+    (tmp_path / "2.jpg").write_bytes(b"kein jpeg")
+    mk_jpg(tmp_path / "3.jpg", (0, 0, 255), size=(W, H))
+    d, sleeps = run_show(fbs.list_images(str(tmp_path)))
+    assert len(d.frames) == 2 and sleeps == [7, 7]
+
+
+def test_slideshow_never_same_transition_twice_in_a_row(tmp_path):
+    for i in range(10):
+        mk_jpg(tmp_path / f"{i}.jpg", (i * 20, 0, 0), size=(W, H))
+    names = []
+    orig = fbs.make_transition
+
+    def spy(name, rng, size):
+        names.append(name)
+        return orig(name, rng, size)
+
+    fbs.make_transition, saved = spy, fbs.make_transition
+    try:
+        run_show(fbs.list_images(str(tmp_path)), transitions=["fade", "wipe", "iris"])
+    finally:
+        fbs.make_transition = saved
+    assert len(names) == 10
+    assert all(x != y for x, y in zip(names, names[1:]))
+
+
+def test_slideshow_single_image_loops_without_retransition(tmp_path):
+    p = tmp_path / "1.jpg"
+    mk_jpg(p, (255, 0, 0), size=(W, H))
+    d, sleeps = run_show([str(p)] * 3)
+    assert len(d.frames) == 1 and sleeps == [7, 7, 7]
+
+
+# ------------------------------------------------------------------- CLI
+def test_parse_args_defaults():
+    a = fbs.parse_args([], env={})
+    assert a.directory == "/mnt/stick/bilder" and a.fb == "/dev/fb1"
+    assert a.hold == 10 and a.duration == 1.2 and a.invert == "auto"
+    assert a.transitions == list(fbs.TRANSITIONS) and not a.shuffle and not a.fill
+
+
+def test_parse_args_env_and_flags():
+    a = fbs.parse_args(["--shuffle", "--fill", "--transitions", "fade, iris",
+                        "--invert", "on", "--size", "480x320", "--bpp", "16"],
+                       env={"FB_DEVICE": "/dev/fb0", "HOLD": "3"})
+    assert a.fb == "/dev/fb0" and a.hold == 3
+    assert a.transitions == ["fade", "iris"] and a.shuffle and a.fill
+    assert a.invert == "on" and a.size == (480, 320) and a.bpp == 16
+
+
+def test_parse_args_rejects_unknown_transition():
+    with pytest.raises(SystemExit):
+        fbs.parse_args(["--transitions", "fade,bogus"], env={})
+
+
+def test_main_once_end_to_end_blanks_on_exit(tmp_path):
+    for i in (1, 2):
+        mk_jpg(tmp_path / f"{i}.jpg", (255, 255, 255), size=(W, H))
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    rc = fbs.main([str(tmp_path), "--fb", str(fb), "--size", f"{W}x{H}", "--bpp", "16",
+                   "--invert", "off", "--hold", "0", "--duration", "0.05", "--once"])
+    assert rc == 0
+    assert fb.stat().st_size == W * H * 2
+    assert fb.read_bytes() == b"\x00" * (W * H * 2)
+
+
+def test_main_missing_geometry_returns_2(tmp_path):
+    assert fbs.main([str(tmp_path), "--fb", "/dev/doesnotexist9"]) == 2
+
+
+def test_main_empty_dir_once_returns_0(tmp_path):
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    assert fbs.main([str(tmp_path / "leer"), "--fb", str(fb), "--size", "48x32",
+                     "--invert", "off", "--once"]) == 0
+
+
+# ------------------------------------------------------------ Pause / Testkarte
+def test_slideshow_pause_holds_until_resumed(tmp_path):
+    for i in (1, 2, 3):
+        mk_jpg(tmp_path / f"{i}.jpg", (255, 0, 0), size=(W, H))
+    answers = iter([True, True])
+    d = FakeDisplay()
+    sleeps = []
+    fbs.slideshow(d, fbs.list_images(str(tmp_path)), 7, 0, False, ["fade"],
+                  random.Random(0), sleep=sleeps.append,
+                  paused=lambda: next(answers, False))
+    assert sleeps == [7, 0.2, 0.2, 7, 7]
+    assert len(d.frames) == 3
+
+
+def test_slideshow_pause_shows_no_new_image_while_paused(tmp_path):
+    for i in (1, 2):
+        mk_jpg(tmp_path / f"{i}.jpg", (255, 0, 0), size=(W, H))
+    d = FakeDisplay()
+    counts = []
+
+    def paused():
+        counts.append(len(d.frames))
+        return len(counts) < 4
+
+    fbs.slideshow(d, fbs.list_images(str(tmp_path)), 1, 0, False, ["fade"],
+                  random.Random(0), sleep=lambda s: None, paused=paused)
+    assert counts[:3] == [1, 1, 1]  # solange pausiert: weiter nur Bild 1
+
+
+def test_testcard_bars_and_ramp():
+    t = fbs.make_testcard(80, 40)
+    assert t.shape == (40, 80, 3) and t.dtype == np.uint8
+    assert t[0, 5].tolist() == [255, 255, 255]
+    assert t[0, 25].tolist() == [0, 255, 255]
+    assert t[0, 45].tolist() == [255, 0, 255]
+    assert t[0, 55].tolist() == [255, 0, 0]
+    assert t[0, 75].tolist() == [0, 0, 0]
+    ramp = t[30, :, 0]
+    assert ramp[0] == 0 and ramp[-1] == 255 and (np.diff(ramp.astype(int)) >= 0).all()
+    assert len(set(ramp.tolist())) == 16
+    assert (t[30, :, 0] == t[30, :, 1]).all() and (t[30, :, 1] == t[30, :, 2]).all()
+
+
+# ------------------------------------------------------------------ Gamma
+def test_gamma_identity_returns_same_frame():
+    f = noise(1)
+    assert fbs.apply_gamma(f, 1.0) is f
+
+
+def test_gamma_values_endpoints_and_monotonic():
+    ramp = np.arange(256, dtype=np.uint8).reshape(1, 256, 1).repeat(3, axis=2)
+    out = fbs.apply_gamma(ramp, 2.0)[0, :, 0]
+    assert out[0] == 0 and out[255] == 255 and out[128] == 64
+    assert (np.diff(out.astype(int)) >= 0).all()
+    assert fbs.apply_gamma(ramp, 0.5)[0, 128, 0] == 181  # <1 hellt auf
+
+
+def test_display_applies_gamma_before_encoding(tmp_path):
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    info = fbs.FbInfo(2, 1, 16, 4)
+    d = fbs.Display(str(fb), info, invert=False, gamma=2.0)
+    frame = np.full((1, 2, 3), 128, np.uint8)
+    d.show(frame)
+    assert fb.read_bytes() == fbs.encode_frame(np.full((1, 2, 3), 64, np.uint8), info, False)
+    d.close()
+
+
+def test_parse_args_gamma():
+    assert fbs.parse_args([], env={}).gamma == (1.0, 1.0, 1.0)
+    assert fbs.parse_args(["--gamma", "2.2"], env={}).gamma == (2.2,) * 3
+    assert fbs.parse_args([], env={"GAMMA": "1.8"}).gamma == (1.8,) * 3
+    assert fbs.parse_args(["--gamma", "2.4,1.8,2.4"], env={}).gamma == (2.4, 1.8, 2.4)
+    with pytest.raises(SystemExit):
+        fbs.parse_args(["--gamma", "0"], env={})
+
+
+def test_parse_args_gamma_rejects_bad_values():
+    for bad in ("1,2", "a", "1,2,3,4", "-1", "2,0,2"):
+        with pytest.raises(SystemExit):
+            fbs.parse_args(["--gamma", bad], env={})
+
+
+def test_gamma_per_channel():
+    f = np.full((1, 1, 3), 128, np.uint8)
+    out = fbs.apply_gamma(f, (2.0, 1.0, 0.5))[0, 0].tolist()
+    assert out == [64, 128, 181]
+
+
+def test_display_applies_per_channel_gamma(tmp_path):
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    info = fbs.FbInfo(1, 1, 32, 4)
+    d = fbs.Display(str(fb), info, invert=False, gamma=(2.0, 1.0, 0.5))
+    d.show(np.full((1, 1, 3), 128, np.uint8))
+    assert fb.read_bytes() == bytes([181, 128, 64, 255])  # BGRA
+    d.close()
+
+
+def test_testcard_ramps_per_channel_rows():
+    t = fbs.make_testcard(80, 40, "ramps")
+    assert t.shape == (40, 80, 3)
+    gray, red, green, blue = t[5], t[15], t[25], t[35]
+    assert (gray[:, 0] == gray[:, 1]).all() and (gray[:, 1] == gray[:, 2]).all()
+    for row, ch in ((red, 0), (green, 1), (blue, 2)):
+        others = [c for c in range(3) if c != ch]
+        assert (row[:, others] == 0).all()
+        assert row[0, ch] == 0 and row[-1, ch] == 255
+        assert len(set(row[:, ch].tolist())) == 16
+    assert len(set(gray[:, 0].tolist())) == 16
+
+
+def test_parse_args_testcard_modes():
+    assert fbs.parse_args([], env={}).testcard is None
+    assert fbs.parse_args(["--testcard"], env={}).testcard == "bars"
+    assert fbs.parse_args(["--testcard", "ramps"], env={}).testcard == "ramps"
+    assert fbs.parse_args(["--testcard", "--gamma", "2"], env={}).testcard == "bars"
+
+
+# ------------------------------------------------------- Limit / Dithering
+def _ramp():
+    return np.arange(256, dtype=np.uint8).reshape(1, 256, 1).repeat(3, axis=2)
+
+
+def test_limit_compresses_range_monotonically():
+    out = fbs.apply_gamma(_ramp(), 1.0, 85)[0, :, 0]
+    assert out[0] == 0 and out[255] == 85 and out[128] == 43
+    assert (np.diff(out.astype(int)) >= 0).all()
+
+
+def test_limit_and_gamma_per_channel():
+    f = np.full((1, 1, 3), 255, np.uint8)
+    assert fbs.apply_gamma(f, 1.0, (85, 100, 120))[0, 0].tolist() == [85, 100, 120]
+    f = np.full((1, 1, 3), 128, np.uint8)
+    assert fbs.apply_gamma(f, 2.0, 100)[0, 0].tolist() == [25, 25, 25]
+
+
+def test_parse_limit():
+    assert fbs.parse_args([], env={}).limit == (255.0,) * 3
+    assert fbs.parse_args(["--limit", "85"], env={}).limit == (85.0,) * 3
+    assert fbs.parse_args([], env={"LIMIT": "90"}).limit == (90.0,) * 3
+    assert fbs.parse_args(["--limit", "80,85,90"], env={}).limit == (80.0, 85.0, 90.0)
+    for bad in ("0", "256", "a", "1,2", "-5"):
+        with pytest.raises(SystemExit):
+            fbs.parse_args(["--limit", bad], env={})
+
+
+def test_dither_flag_default_off():
+    assert fbs.parse_args([], env={}).dither is False
+    assert fbs.parse_args(["--dither"], env={}).dither is True
+
+
+def _decode565(raw, w, h):
+    px = np.frombuffer(raw, "<u2").reshape(h, w).astype(np.int32)
+    return (px >> 11) & 31, (px >> 5) & 63, px & 31
+
+
+def test_dither_preserves_mean_intensity_and_extremes():
+    info = fbs.FbInfo(16, 16, 16, 32)
+    flat = np.full((16, 16, 3), 100, np.uint8)
+    r, g, b = _decode565(fbs.encode_frame(flat, info, False, dither=True), 16, 16)
+    assert abs(r.mean() * 8 - 100) <= 0.5 and abs(b.mean() * 8 - 100) <= 0.5
+    assert abs(g.mean() * 4 - 100) <= 0.25
+    assert len(set(r.flatten().tolist())) == 2  # zwei benachbarte Stufen
+    for v, rmax, gmax in ((0, 0, 0), (255, 31, 63)):
+        f = np.full((16, 16, 3), v, np.uint8)
+        r, g, b = _decode565(fbs.encode_frame(f, info, False, dither=True), 16, 16)
+        assert (r == rmax).all() and (g == gmax).all() and (b == rmax).all()
+
+
+def test_dither_off_equals_plain_truncation_and_32bpp_untouched():
+    info16 = fbs.FbInfo(8, 8, 16, 16)
+    f = np.full((8, 8, 3), 100, np.uint8)
+    assert fbs.encode_frame(f, info16, False) == fbs.encode_frame(f, info16, False, False)
+    r, _, _ = _decode565(fbs.encode_frame(f, info16, False), 8, 8)
+    assert (r == 100 >> 3).all()
+    info32 = fbs.FbInfo(8, 8, 32, 32)
+    assert fbs.encode_frame(f, info32, False, True) == fbs.encode_frame(f, info32, False, False)
+
+
+def test_dither_is_spatially_varying_and_deterministic():
+    f = np.full((8, 8, 3), 100, np.uint8)
+    d1, d2 = fbs.dither565(f), fbs.dither565(f)
+    assert np.array_equal(d1, d2) and len(np.unique(d1[..., 0] >> 3)) == 2
+    assert d1.shape == f.shape and d1.dtype == np.uint8
+
+
+def test_display_applies_limit_then_dither(tmp_path):
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    info = fbs.FbInfo(4, 4, 16, 8)
+    d = fbs.Display(str(fb), info, invert=False, gamma=1.0, limit=85, dither=True)
+    d.show(np.full((4, 4, 3), 255, np.uint8))
+    expect = fbs.encode_frame(np.full((4, 4, 3), 85, np.uint8), info, False, True)
+    assert fb.read_bytes() == expect
+    d.close()
+
+
+# ------------------------------------------------------------- Schwarzpegel
+def test_black_offset_endpoints_and_monotonic():
+    out = fbs.apply_gamma(_ramp(), 1.0, 85, 20)[0, :, 0]
+    assert out[0] == 20 and out[255] == 85
+    assert (np.diff(out.astype(int)) >= 0).all()
+    assert out[128] == round(20 + 65 * 128 / 255)
+
+
+def test_black_per_channel_lifts_weak_channels():
+    f = np.zeros((1, 1, 3), np.uint8)
+    assert fbs.apply_gamma(f, 1.0, 85, (22, 16, 0))[0, 0].tolist() == [22, 16, 0]
+    f = np.full((1, 1, 3), 255, np.uint8)
+    assert fbs.apply_gamma(f, 1.0, 85, (22, 16, 0))[0, 0].tolist() == [85, 85, 85]
+
+
+def test_black_default_is_identity():
+    f = noise(3)
+    assert fbs.apply_gamma(f, 1.0, 255.0, 0.0) is f
+
+
+def test_parse_black():
+    assert fbs.parse_args([], env={}).black == (0.0,) * 3
+    assert fbs.parse_args(["--black", "10"], env={}).black == (10.0,) * 3
+    assert fbs.parse_args(["--black", "22,16,0", "--limit", "85"], env={}).black == (22.0, 16.0, 0.0)
+    assert fbs.parse_args([], env={"BLACK": "5"}).black == (5.0,) * 3
+    for bad in ("-1", "255", "a", "1,2"):
+        with pytest.raises(SystemExit):
+            fbs.parse_args(["--black", bad], env={})
+
+
+def test_parse_black_must_stay_below_limit():
+    with pytest.raises(SystemExit):
+        fbs.parse_args(["--limit", "85", "--black", "85"], env={})
+    with pytest.raises(SystemExit):
+        fbs.parse_args(["--limit", "85,85,40", "--black", "0,0,50"], env={})
+    assert fbs.parse_args(["--limit", "85", "--black", "84"], env={}).black == (84.0,) * 3
+
+
+def test_display_applies_black_offset(tmp_path):
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    info = fbs.FbInfo(1, 1, 32, 4)
+    d = fbs.Display(str(fb), info, invert=False, limit=85, black=(22, 16, 0))
+    d.show(np.zeros((1, 1, 3), np.uint8))
+    assert fb.read_bytes() == bytes([0, 16, 22, 255])  # BGRA
+    d.close()
+
+
+def test_blank_uses_raw_black_ignoring_corrections(tmp_path):
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    info = fbs.FbInfo(4, 2, 16, 8)
+    d = fbs.Display(str(fb), info, invert=False, gamma=2.0, limit=85,
+                    black=(0, 4, 0), dither=True)
+    d.show(np.zeros((2, 4, 3), np.uint8))
+    assert fb.read_bytes() != b"\x00" * 16  # Korrektur hebt Schwarz an (G=4)
+    d.blank()
+    assert fb.read_bytes() == b"\x00" * 16
+
+
+def test_blank_with_invert_is_raw_white_bytes(tmp_path):
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    d = fbs.Display(str(fb), fbs.FbInfo(4, 2, 16, 8), invert=True,
+                    limit=85, black=(0, 4, 0), dither=True)
+    d.blank()
+    assert fb.read_bytes() == b"\xff" * 16
