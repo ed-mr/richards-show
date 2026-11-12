@@ -26,7 +26,7 @@ SCP  := scp -q -o BatchMode=yes -o ConnectTimeout=10
 DEPLOY_FILES := fb-slideshow.py test_fb_slideshow.py requirements.txt
 VERSIONS := import sys, numpy, PIL; print(sys.version.split()[0], numpy.__version__, PIL.__version__)
 
-.PHONY: test deploy test-hydra start stop restart pause resume status config ci clean
+.PHONY: test deploy test-hydra start stop restart pause resume status config measure-fps ci clean
 
 $(VENV)/.stamp: requirements-ci.txt
 	$(UV) venv -q --clear --python $(PYTHON_VERSION) $(VENV)
@@ -39,7 +39,7 @@ test: $(VENV)/.stamp
 deploy:
 	$(SSH) $(HYDRA) 'mkdir -p $(DEPLOY_DIR)/ci'
 	$(SCP) $(DEPLOY_FILES) $(HYDRA):$(DEPLOY_DIR)/
-	$(SCP) ci/show.sh ci/fb-slideshow.service $(HYDRA):$(DEPLOY_DIR)/ci/
+	$(SCP) ci/show.sh ci/fb-slideshow.service ci/measure_fps.py $(HYDRA):$(DEPLOY_DIR)/ci/
 	$(SSH) $(HYDRA) 'chmod +x $(DEPLOY_DIR)/ci/show.sh && $(DEPLOY_DIR)/ci/show.sh install'
 	@echo "deployed to $(HYDRA):$(DEPLOY_DIR)"
 
@@ -57,6 +57,13 @@ start stop restart pause resume status:
 
 config:
 	@$(SSH) $(HYDRA) "$(DEPLOY_DIR)/ci/show.sh config '$(SHOW_ARGS)'"
+
+# frame rate of transitions on the real panel (stops the show meanwhile)
+measure-fps:
+	$(SCP) ci/measure_fps.py $(HYDRA):$(DEPLOY_DIR)/ci/
+	$(SSH) $(HYDRA) '$(DEPLOY_DIR)/ci/show.sh stop'
+	-$(SSH) $(HYDRA) 'PYTHONDONTWRITEBYTECODE=1 python3 $(DEPLOY_DIR)/ci/measure_fps.py --transitions stack,cut,fade'
+	$(SSH) $(HYDRA) '$(DEPLOY_DIR)/ci/show.sh start'
 
 ci: test deploy test-hydra restart
 

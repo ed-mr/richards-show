@@ -2,7 +2,7 @@
 
 Small slideshow for the 480x320 SPI display (fbtft, `/dev/fb1`) of a
 Raspberry Pi. Shows the `*.jpg` / `*.jpeg` files of a directory in natural
-order with changing transitions. Writes directly into the framebuffer
+order, with a hard cut or a transition. Writes directly into the framebuffer
 (mmap), without X11 and without fbi.
 
 ## Requirements
@@ -31,10 +31,12 @@ Geometry, color depth and stride are read from sysfs
 | `directory` | `/mnt/stick/bilder` | image directory (env `IMAGE_DIR`, legacy `BILDER_DIR`) |
 | `--fb` | `/dev/fb1` | framebuffer device (env `FB_DEVICE`) |
 | `--hold S` | 10 | seconds per image (env `HOLD`) |
-| `--duration S` | 1.2 | transition duration (env `DURATION`) |
+| `--transitions LIST` | `cut` | comma-separated, see [Transitions](#transitions) (env `TRANSITIONS`) |
+| `--duration S` | 2.0 | transition duration (env `DURATION`) |
+| `--easing E` | `ease-in-out` | speed curve: `ease-in-out`, `ease-out` or `linear` (env `EASING`) |
+| `--seed N` | new each start | random seed for `--shuffle` and transition variations; logged at start so a run can be repeated (env `SEED`) |
 | `--shuffle` | off | random order |
 | `--fill` | off | image fills the display (cropped) instead of being fitted |
-| `--transitions LIST` | all | comma-separated from `fade,wipe,push,blinds,dissolve,iris,zoom,split` |
 | `--invert auto\|on\|off` | auto | panel inversion |
 | `--size WxH`, `--bpp N` | from sysfs | manual override of the framebuffer values |
 | `--gamma G` | 1.0 | gamma correction (env `GAMMA`) |
@@ -50,6 +52,57 @@ not needed.
 
 Unreadable images are skipped. If the directory is empty, the program
 waits and checks again.
+
+## Transitions
+
+| Name | Effect |
+|---|---|
+| `cut` | hard cut, the next picture replaces the current one at once (default) |
+| `stack` | the pictures lie on a stack: the current one slides off to the left, right, top or bottom, with a slight sideways drift and a soft shadow; the next one already lies still underneath |
+| `fade`, `wipe`, `push`, `blinds`, `dissolve`, `iris`, `zoom`, `split` | older effects, available but not part of the default |
+
+With several names, one is picked at random for each picture, never the same
+one twice in a row. The next picture is loaded and scaled while the current
+one is shown, so a transition never waits for it. Transitions are time-based:
+if frames are slow, frames are dropped and the duration stays the same.
+
+### Configuring
+
+| Setting | Option | Env | Default |
+|---|---|---|---|
+| which transition(s) | `--transitions cut\|stack\|...` | `TRANSITIONS` | `cut` |
+| duration in seconds | `--duration S` | `DURATION` | 2.0 |
+| speed curve | `--easing ease-in-out\|ease-out\|linear` | `EASING` | `ease-in-out` |
+| random seed (direction and drift of each `stack`) | `--seed N` | `SEED` | new each start, logged |
+
+Examples:
+
+```bash
+# directly
+python3 fb-slideshow.py --transitions stack --duration 3 --easing ease-out
+
+# on hydra, from itaka (kept across reboots and deploys, restarts the show)
+make config SHOW_ARGS="--transitions stack --duration 3"
+make config SHOW_ARGS=                  # back to the defaults (hard cut)
+
+# from GitHub
+gh workflow run show.yml -f action=config -f show_args="--transitions stack"
+```
+
+To repeat a run exactly, take the seed from the start line in the log
+(`make status`) and pass it with `--seed`.
+
+Fixed in the code (not options): the exit directions of `stack` (left,
+right, up, down), its maximum sideways drift (8 % of the display, constant
+`STACK_MAX_DRIFT`), and the shadow (4 % of the display wide, 35 % darkening
+at the edge, in `make_stack`).
+
+Frame rate on hydra (Raspberry Pi 3 B, 480x320 RGB565 over SPI at 15 MHz,
+measured with `make measure-fps`): a full frame takes ~164 ms on the SPI bus,
+so the panel can show at most **6.1 frames/s**. A 2 s `stack` transition
+reaches **~4.9 frames/s** on the panel (about 10 full frames). The CPU is not
+the limit (the program renders ~8 frames/s); only a higher SPI clock would
+make transitions smoother.
 
 ## Pause and exit
 
@@ -92,6 +145,7 @@ Everything is driven from itaka with `make` (ssh/scp to hydra):
 | `make pause` / `resume` | pause or resume (`SIGUSR1`), the image stays |
 | `make status` | state, boot setting, options, recent log |
 | `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options (kept across reboots and deploys; `SHOW_ARGS=` resets) |
+| `make measure-fps` | frame rate of transitions on the real panel (stops the show meanwhile) |
 | `make ci` | test + deploy + test-hydra + restart |
 
 GitHub Actions runs the same steps on a self-hosted runner on itaka: the
