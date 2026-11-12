@@ -1,7 +1,9 @@
 import importlib.util
 import itertools
 import pathlib
+import os
 import random
+import sys
 
 import numpy as np
 import pytest
@@ -215,7 +217,10 @@ def test_transition_endpoints_exact_for_many_random_variants(name):
             assert out.shape == (H, W, 3) and out.dtype == np.uint8
 
 
-@pytest.mark.parametrize("name", sorted(fbs.TRANSITIONS))
+MOVING = sorted(set(fbs.TRANSITIONS) - {"cut"})  # all except the hard cut
+
+
+@pytest.mark.parametrize("name", MOVING)
 def test_transition_progresses_monotonically(name):
     a, b = np.zeros((H, W, 3), np.uint8), np.full((H, W, 3), 255, np.uint8)
     for seed in range(8):
@@ -243,9 +248,6 @@ def test_transition_varies_between_runs(name):
     assert len(outs) > 1
 
 
-STACK_DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
-
-
 def test_stack_next_picture_waits_below():
     """The revealed part of b is b itself, in place, and only ever grows."""
     a, b = np.zeros((H, W, 3), np.uint8), noise(2)
@@ -260,21 +262,18 @@ def test_stack_next_picture_waits_below():
 
 
 def test_stack_current_picture_slides_unchanged():
-    """The visible part of a is an exact, shifted copy of a (no scaling, no blending)."""
+    """The visible part of a is an exact copy of a at stack_position(p): only
+    the offset of the top picture changes (no scaling, no blending)."""
     a, b = noise(1), np.zeros((H, W, 3), np.uint8)
-    p = 0.4
-    seen = set()
-    for seed in range(40):
-        out = fbs.make_transition("stack", random.Random(seed), (W, H))(a, b, p)
-        for dx, dy in STACK_DIRS:
-            sx, sy = dx * round(W * p), dy * round(H * p)
+    for seed in range(20):
+        params = fbs.stack_params(random.Random(seed))
+        t = fbs.make_stack(random.Random(seed), W, H)
+        for p in (0.2, 0.5, 0.8):
+            out = t(a, b, p)
+            fx, fy = fbs.stack_position(p, params, (W, H))
+            sx, sy = int(round(fx)), int(round(fy))
             x0, x1, y0, y1 = max(sx, 0), min(sx + W, W), max(sy, 0), min(sy + H, H)
-            if np.array_equal(out[y0:y1, x0:x1], a[y0 - sy:y1 - sy, x0 - sx:x1 - sx]):
-                seen.add((dx, dy))
-                break
-        else:
-            pytest.fail(f"seed {seed}: no shifted copy of a found")
-    assert len(seen) >= 6  # directions really vary
+            assert np.array_equal(out[y0:y1, x0:x1], a[y0 - sy:y1 - sy, x0 - sx:x1 - sx])
 
 
 def test_stack_shadow_darkens_only_near_the_edge():
@@ -403,8 +402,9 @@ def test_slideshow_single_image_loops_without_retransition(tmp_path):
 def test_parse_args_defaults():
     a = fbs.parse_args([], env={})
     assert a.directory == "/mnt/stick/bilder" and a.fb == "/dev/fb1"
-    assert a.hold == 10 and a.duration == 1.2 and a.invert == "auto"
-    assert a.transitions == list(fbs.TRANSITIONS) and not a.shuffle and not a.fill
+    assert a.hold == 10 and a.duration == 2.0 and a.invert == "auto"
+    assert a.transitions == ["cut"] and not a.shuffle and not a.fill
+    assert a.easing == "ease-in-out" and a.seed is None
 
 
 def test_parse_args_env_and_flags():
@@ -709,3 +709,203 @@ def test_blank_with_invert_is_raw_white_bytes(tmp_path):
                     limit=85, black=(0, 4, 0), dither=True)
     d.blank()
     assert fb.read_bytes() == b"\xff" * 16
+
+
+# ------------------------------------------------- stack (issue #4 criteria)
+@pytest.mark.parametrize("d", fbs.STACK_DIRECTIONS)
+def test_stack_position_geometry_per_direction(d):
+    """t = 0: at rest; t = 0.5: half way out; t = 1: completely off-screen."""
+    for drift in (-fbs.STACK_MAX_DRIFT, 0.0, fbs.STACK_MAX_DRIFT):
+        params = fbs.StackParams(d[0], d[1], drift)
+        assert fbs.stack_position(0, params, (W, H)) == (0, 0)
+        x, y = fbs.stack_position(0.5, params, (W, H))
+        x1, y1 = fbs.stack_position(1, params, (W, H))
+        if d[0]:
+            assert x == d[0] * W / 2 and x1 == d[0] * W  # fully left/right of the display
+            assert abs(y1) <= fbs.STACK_MAX_DRIFT * H + 1e-9
+        else:
+            assert y == d[1] * H / 2 and y1 == d[1] * H  # fully above/below
+            assert abs(x1) <= fbs.STACK_MAX_DRIFT * W + 1e-9
+
+
+def test_stack_position_moves_continuously():
+    params = fbs.StackParams(-1, 0, 0.05)
+    xs = [fbs.stack_position(i / 100, params, (W, H))[0] for i in range(101)]
+    steps = np.diff(xs)
+    assert (steps < 0).all() and np.allclose(steps, steps[0])  # no jumps
+
+
+def test_stack_params_reproducible_and_varied():
+    assert [fbs.stack_params(random.Random(s)) for s in range(10)] == \
+           [fbs.stack_params(random.Random(s)) for s in range(10)]
+    many = [fbs.stack_params(random.Random(s)) for s in range(200)]
+    assert {(p.dx, p.dy) for p in many} == set(fbs.STACK_DIRECTIONS)  # only 4 sides
+    assert all(abs(p.drift) <= fbs.STACK_MAX_DRIFT for p in many)
+    assert len({round(p.drift, 6) for p in many}) > 100
+
+
+@pytest.mark.parametrize("name", fbs.EASINGS)
+def test_easing_endpoints_and_monotonic(name):
+    e = fbs.EASINGS[name]
+    vals = [e(i / 50) for i in range(51)]
+    assert vals[0] == 0 and vals[-1] == 1
+    assert all(x <= y for x, y in zip(vals, vals[1:]))
+
+
+def test_easing_shapes():
+    e = fbs.EASINGS
+    assert e["ease-out"](0.2) > e["linear"](0.2) > e["ease-in-out"](0.2)
+    assert e["linear"](0.5) == e["ease-in-out"](0.5) == 0.5
+
+
+def test_run_transition_uses_easing():
+    seen = []
+
+    def spy(a, b, p):
+        seen.append(p)
+        return a
+
+    clock = iter([0.0, 0.5, 2.5]).__next__  # t0, one frame at 25%, then done
+    fbs.run_transition(FakeDisplay(), spy, noise(1), noise(2), 2.0, clock=clock,
+                       easing=fbs.EASINGS["ease-out"])
+    assert seen == [pytest.approx(1 - 0.75 ** 2)]
+
+
+def test_run_transition_slow_frames_do_not_stretch_duration():
+    """Every frame takes 0.7 s: frames are dropped, the total stays 2 s."""
+    t = [-0.7]
+
+    def clock():
+        t[0] += 0.7
+        return t[0]
+
+    seen = []
+    d = FakeDisplay()
+    fbs.run_transition(d, lambda a, b, p: seen.append(p) or a, noise(1), noise(2),
+                       2.0, clock=clock, easing=fbs.EASINGS["linear"])
+    assert seen == [pytest.approx(0.35), pytest.approx(0.7)]
+    assert t[0] == pytest.approx(2.1) and np.array_equal(d.frames[-1], noise(2))
+
+
+def _show(tmp_path, transitions, seed=0, duration=1.0):
+    for i, c in enumerate([(255, 0, 0), (0, 255, 0), (0, 0, 255)], 1):
+        mk_jpg(tmp_path / f"{i}.jpg", c, size=(80, 40))
+    tick = [0.0]
+
+    def clock():
+        tick[0] += 0.1
+        return tick[0]
+
+    d = FakeDisplay()
+    fbs.slideshow(d, fbs.list_images(str(tmp_path)), 1, duration, False, transitions,
+                  random.Random(seed), sleep=lambda s: None, clock=clock)
+    return d
+
+
+def test_cut_is_default_and_shows_no_intermediate_frames(tmp_path):
+    assert fbs.parse_args([], env={}).transitions == ["cut"]
+    d = _show(tmp_path, ["cut"])
+    assert len(d.frames) == 3  # one frame per picture, nothing in between
+
+
+def test_config_switch_stack(tmp_path):
+    assert fbs.parse_args(["--transitions", "stack"], env={}).transitions == ["stack"]
+    assert fbs.parse_args([], env={"TRANSITIONS": "stack"}).transitions == ["stack"]
+    d = _show(tmp_path, ["stack"])
+    assert len(d.frames) > 3 * 5  # animated: several frames per transition
+
+
+def test_stack_ends_pixel_identical_to_static_render(tmp_path):
+    d = _show(tmp_path, ["stack"])
+    last = fbs.load_image(str(tmp_path / "3.jpg"), (W, H))
+    assert np.array_equal(d.frames[-1], last)
+
+
+def test_stack_no_black_frame_between_pictures(tmp_path):
+    """Next picture is prepared before the transition: from the first picture
+    on, no frame is ever black (the letterbox bars aside)."""
+    d = _show(tmp_path, ["stack"])
+    first = next(i for i, f in enumerate(d.frames) if np.array_equal(
+        f, fbs.load_image(str(tmp_path / "1.jpg"), (W, H))))
+    for f in d.frames[first:]:
+        assert f[H // 2, W // 2].any()  # centre always shows a picture
+
+
+def test_next_picture_loaded_before_transition_starts(tmp_path):
+    for i in (1, 2):
+        mk_jpg(tmp_path / f"{i}.jpg", (200, 0, 0), size=(W, H))
+    events = []
+    orig_load, orig_run = fbs.load_image, fbs.run_transition
+
+    def load(path, size, fill=False):
+        img = orig_load(path, size, fill)
+        events.append(("loaded", path))
+        return img
+
+    def run(display, fn, a, b, *args, **kw):
+        assert b.shape == (H, W, 3)  # already scaled to the display size
+        events.append(("transition", len([e for e in events if e[0] == "loaded"])))
+        return orig_run(display, fn, a, b, *args, **kw)
+
+    fbs.load_image, fbs.run_transition = load, run
+    try:
+        fbs.slideshow(FakeDisplay(), fbs.list_images(str(tmp_path)), 0, 0, False,
+                      ["stack"], random.Random(0), sleep=lambda s: None)
+    finally:
+        fbs.load_image, fbs.run_transition = orig_load, orig_run
+    transitions = [n for kind, n in events if kind == "transition"]
+    assert transitions[0] >= 1 and transitions[1] >= 2
+
+
+def test_seed_makes_a_run_reproducible(tmp_path):
+    a = _show(tmp_path, ["stack"], seed=42)
+    b = _show(tmp_path, ["stack"], seed=42)
+    c = _show(tmp_path, ["stack"], seed=7)
+    assert len(a.frames) == len(b.frames)
+    assert all(np.array_equal(x, y) for x, y in zip(a.frames, b.frames))
+    assert len(a.frames) != len(c.frames) or not all(
+        np.array_equal(x, y) for x, y in zip(a.frames, c.frames))
+
+
+def test_parse_args_seed_and_easing():
+    assert fbs.parse_args(["--seed", "5"], env={}).seed == 5
+    assert fbs.parse_args([], env={"SEED": "9"}).seed == 9
+    assert fbs.parse_args(["--easing", "linear"], env={}).easing == "linear"
+    assert fbs.parse_args([], env={"EASING": "ease-out"}).easing == "ease-out"
+    with pytest.raises(SystemExit):
+        fbs.parse_args(["--easing", "bounce"], env={})
+
+
+_writes = None
+
+
+def _audit(event, args):
+    if _writes is None or event != "open":
+        return
+    path, mode, flags = args
+    if (mode and any(c in mode for c in "wax+")) or (
+            flags and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND)):
+        _writes.append(str(path))
+
+
+sys.addaudithook(_audit)
+
+
+def test_show_with_stack_writes_only_to_the_framebuffer(tmp_path):
+    """No file other than the framebuffer is opened for writing (SD card)."""
+    global _writes
+    pics = tmp_path / "pics"
+    pics.mkdir()
+    for i in (1, 2, 3):
+        mk_jpg(pics / f"{i}.jpg", (i * 60, 0, 0), size=(W, H))
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    _writes = []
+    try:
+        rc = fbs.main([str(pics), "--fb", str(fb), "--size", f"{W}x{H}", "--bpp", "16",
+                       "--invert", "off", "--hold", "0", "--duration", "0.2",
+                       "--transitions", "stack", "--seed", "1", "--once"])
+    finally:
+        writes, _writes = _writes, None
+    assert rc == 0
+    assert set(writes) == {str(fb)}

@@ -2,7 +2,7 @@
 """Slideshow for the small SPI TFT (fbtft) on a Raspberry Pi.
 
 Shows the JPEGs from a directory (default: /mnt/stick/bilder) in order on
-the framebuffer, with changing, randomly chosen transitions.
+the framebuffer, with a hard cut or a transition (e.g. "stack").
 
 Unlike fbi, this script writes directly into the framebuffer (mmap), because
 that is the only way to render transition frames. As with fb-image-watcher.sh:
@@ -275,6 +275,14 @@ def _smooth(p):
     return p * p * (3 - 2 * p)
 
 
+# Easing: maps elapsed time (0..1) to progress of the motion (0..1).
+EASINGS = {
+    "ease-in-out": _smooth,                # starts and ends gently
+    "ease-out": lambda p: 1 - (1 - p) ** 2,  # starts at full speed, settles
+    "linear": lambda p: p,
+}
+
+
 def _mix(a, b, p):
     k = int(p * 256)
     return (
@@ -292,6 +300,11 @@ def _blend(a, b, mask):
 def _grid(w, h):
     ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
     return xs, ys
+
+
+def make_cut(rng, w, h):
+    """Hard cut: the next picture replaces the current one at once."""
+    return lambda a, b, p: b
 
 
 def make_fade(rng, w, h):
@@ -328,19 +341,48 @@ def make_push(rng, w, h):
     return run
 
 
+class StackParams(NamedTuple):
+    dx: int       # exit direction: (dx, dy) is one of (±1, 0), (0, ±1)
+    dy: int
+    drift: float  # sideways offset at the end, as a fraction of the
+                  # perpendicular display size (like a hand pulling it off)
+
+
+STACK_DIRECTIONS = [(1, 0), (-1, 0), (0, 1), (0, -1)]  # right, left, down, up
+STACK_MAX_DRIFT = 0.08
+
+
+def stack_params(rng):
+    """One variation of the stack transition, drawn from the seeded rng."""
+    dx, dy = rng.choice(STACK_DIRECTIONS)
+    return StackParams(dx, dy, rng.uniform(-STACK_MAX_DRIFT, STACK_MAX_DRIFT))
+
+
+def stack_position(t, params, size):
+    """Top-left corner (x, y) of the top picture at progress t (0..1).
+
+    Pure function: t = 0 is the resting position (0, 0); at t = 1 the picture
+    has moved one full display width/height and is completely off-screen."""
+    w, h = size
+    if params.dx:
+        return params.dx * w * t, params.drift * h * t
+    return params.drift * w * t, params.dy * h * t
+
+
 def make_stack(rng, w, h):
-    """Stack of photos: the current picture slides off in one of 8 directions,
-    the next one already lies still underneath. The moving picture casts a
-    soft shadow onto the one below."""
-    dx, dy = rng.choice([(1, 0), (-1, 0), (0, 1), (0, -1),
-                         (1, 1), (1, -1), (-1, 1), (-1, -1)])
+    """Stack of photos: the current picture slides off to the left, right, top
+    or bottom (with a slight sideways drift), the next one already lies still
+    underneath. The moving picture casts a soft shadow onto the one below.
+    Only the offset of the top picture changes; both pictures are pre-scaled."""
+    params = stack_params(rng)
     shadow = 0.04 * max(w, h)  # width of the shadow in pixels
-    depth = 0.5                # darkening right at the edge (0..1)
+    depth = 0.35               # darkening right at the edge (0..1)
     xs = np.arange(w, dtype=np.float32)
     ys = np.arange(h, dtype=np.float32)
 
     def run(a, b, p):
-        sx, sy = dx * int(round(w * p)), dy * int(round(h * p))
+        fx, fy = stack_position(p, params, (w, h))
+        sx, sy = int(round(fx)), int(round(fy))
         # distance of every pixel from the moved picture's rectangle
         ex = np.maximum(np.maximum(sx - xs, xs - (sx + w - 1)), 0)
         ey = np.maximum(np.maximum(sy - ys, ys - (sy + h - 1)), 0)
@@ -437,6 +479,7 @@ def make_split(rng, w, h):
 
 
 TRANSITIONS = {
+    "cut": make_cut,
     "fade": make_fade,
     "wipe": make_wipe,
     "push": make_push,
@@ -464,8 +507,11 @@ def make_transition(name, rng, size):
     return run
 
 
-def run_transition(display, fn, a, b, duration, clock=time.monotonic):
-    """Time-driven: the SPI bandwidth decides how many frames there will be."""
+def run_transition(display, fn, a, b, duration, clock=time.monotonic,
+                   easing=_smooth):
+    """Time-driven: each frame shows the state for the current time, so slow
+    frames are skipped instead of stretching the transition. The SPI bandwidth
+    decides how many frames there will be."""
     if duration <= 0:
         display.show(b)
         return
@@ -474,7 +520,7 @@ def run_transition(display, fn, a, b, duration, clock=time.monotonic):
         p = (clock() - t0) / duration
         if p >= 1:
             break
-        display.show(fn(a, b, _smooth(max(p, 0.0))))
+        display.show(fn(a, b, easing(max(p, 0.0))))
     display.show(b)
 
 
@@ -507,7 +553,8 @@ def make_testcard(w, h, kind="bars"):
 
 
 def slideshow(display, paths, hold, duration, fill, transitions, rng,
-              sleep=time.sleep, clock=time.monotonic, paused=lambda: False):
+              sleep=time.sleep, clock=time.monotonic, paused=lambda: False,
+              easing=_smooth):
     size = display.size
     w, h = size
     paths = iter(paths)
@@ -538,7 +585,8 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
                 choices = [t for t in transitions if t != last] or transitions
                 last = rng.choice(choices)
                 fn = make_transition(last, rng, size)
-                run_transition(display, fn, prev, img, duration, clock)
+                run_transition(display, fn, prev, img,
+                               0 if last == "cut" else duration, clock, easing)
                 prev, prev_path = img, path
             sleep(hold)
             while paused():  # image stays until the next SIGUSR1 arrives
@@ -562,13 +610,18 @@ def parse_args(argv, env=os.environ):
     ap.add_argument("--hold", type=float, default=float(env.get("HOLD", 10)),
                     help="seconds per image (default 10)")
     ap.add_argument("--duration", type=float,
-                    default=float(env.get("DURATION", 1.2)),
-                    help="transition duration in seconds (default 1.2)")
+                    default=float(env.get("DURATION", 2.0)),
+                    help="transition duration in seconds (default 2.0)")
+    ap.add_argument("--easing", choices=list(EASINGS),
+                    default=env.get("EASING", "ease-in-out"),
+                    help="speed curve of the transition (default ease-in-out)")
     ap.add_argument("--shuffle", action="store_true", help="random order")
     ap.add_argument("--fill", action="store_true",
                     help="crop the image instead of black borders")
-    ap.add_argument("--transitions", default=",".join(TRANSITIONS),
-                    help="comma-separated list, default: all (%s)" % ",".join(TRANSITIONS))
+    ap.add_argument("--transitions", default=env.get("TRANSITIONS", "cut"),
+                    help="comma-separated list, picked at random, never the same "
+                         "twice in a row; default: cut. Available: %s"
+                         % ",".join(TRANSITIONS))
     ap.add_argument("--invert", choices=["auto", "on", "off"], default="auto")
     ap.add_argument("--size", type=parse_size, help="override, e.g. 480x320")
     ap.add_argument("--bpp", type=int, help="override, e.g. 16")
@@ -586,6 +639,10 @@ def parse_args(argv, env=os.environ):
     ap.add_argument("--testcard", nargs="?", const="bars", default=None,
                     choices=["bars", "ramps"],
                     help="only show a test card (bars or ramps)")
+    ap.add_argument("--seed", type=int,
+                    default=int(env["SEED"]) if env.get("SEED") else None,
+                    help="random seed (order with --shuffle, transition variations); "
+                         "default: new each start, logged so a run can be repeated")
     ap.add_argument("--once", action="store_true", help="only one round (testing)")
     args = ap.parse_args(argv)
     names = [t.strip() for t in args.transitions.split(",") if t.strip()]
@@ -624,9 +681,12 @@ def main(argv=None):
         log("PAUSED" if paused.is_set() else "RESUMED")
 
     signal.signal(signal.SIGUSR1, toggle)
-    rng = random.Random()
+    seed = args.seed if args.seed is not None else random.SystemRandom().randrange(2**32)
+    rng = random.Random(seed)
     log(f"Slideshow {args.directory} -> {args.fb} {info.width}x{info.height} "
-        f"{info.bpp}bpp invert={invert} hold={args.hold}s")
+        f"{info.bpp}bpp invert={invert} hold={args.hold}s "
+        f"transitions={','.join(args.transitions)} duration={args.duration}s "
+        f"easing={args.easing} seed={seed}")
     try:
         if args.testcard:
             display.show(make_testcard(*display.size, args.testcard))
@@ -636,7 +696,7 @@ def main(argv=None):
             display,
             playlist(args.directory, args.shuffle, rng, loop=not args.once),
             args.hold, args.duration, args.fill, args.transitions, rng,
-            paused=paused.is_set,
+            paused=paused.is_set, easing=EASINGS[args.easing],
         )
     except (KeyboardInterrupt, SystemExit):
         pass
