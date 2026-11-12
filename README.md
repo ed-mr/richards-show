@@ -66,6 +66,37 @@ one twice in a row. The next picture is loaded and scaled while the current
 one is shown, so a transition never waits for it. Transitions are time-based:
 if frames are slow, frames are dropped and the duration stays the same.
 
+### Configuring
+
+| Setting | Option | Env | Default |
+|---|---|---|---|
+| which transition(s) | `--transitions cut\|stack\|...` | `TRANSITIONS` | `cut` |
+| duration in seconds | `--duration S` | `DURATION` | 2.0 |
+| speed curve | `--easing ease-in-out\|ease-out\|linear` | `EASING` | `ease-in-out` |
+| random seed (direction and drift of each `stack`) | `--seed N` | `SEED` | new each start, logged |
+
+Examples:
+
+```bash
+# directly
+python3 fb-slideshow.py --transitions stack --duration 3 --easing ease-out
+
+# on hydra, from itaka (kept across reboots and deploys, restarts the show)
+make config SHOW_ARGS="--transitions stack --duration 3"
+make config SHOW_ARGS=                  # back to the defaults (hard cut)
+
+# from GitHub
+gh workflow run show.yml -f action=config -f show_args="--transitions stack"
+```
+
+To repeat a run exactly, take the seed from the start line in the log
+(`make status`) and pass it with `--seed`.
+
+Fixed in the code (not options): the exit directions of `stack` (left,
+right, up, down), its maximum sideways drift (8 % of the display, constant
+`STACK_MAX_DRIFT`), and the shadow (4 % of the display wide, 35 % darkening
+at the edge, in `make_stack`).
+
 Frame rate on hydra (Raspberry Pi 3 B, 480x320 RGB565 over SPI at 15 MHz,
 measured with `make measure-fps`): a full frame takes ~164 ms on the SPI bus,
 so the panel can show at most **6.1 frames/s**. A 2 s `stack` transition
