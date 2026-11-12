@@ -328,6 +328,33 @@ def make_push(rng, w, h):
     return run
 
 
+def make_stack(rng, w, h):
+    """Stack of photos: the current picture slides off in one of 8 directions,
+    the next one already lies still underneath. The moving picture casts a
+    soft shadow onto the one below."""
+    dx, dy = rng.choice([(1, 0), (-1, 0), (0, 1), (0, -1),
+                         (1, 1), (1, -1), (-1, 1), (-1, -1)])
+    shadow = 0.04 * max(w, h)  # width of the shadow in pixels
+    depth = 0.5                # darkening right at the edge (0..1)
+    xs = np.arange(w, dtype=np.float32)
+    ys = np.arange(h, dtype=np.float32)
+
+    def run(a, b, p):
+        sx, sy = dx * int(round(w * p)), dy * int(round(h * p))
+        # distance of every pixel from the moved picture's rectangle
+        ex = np.maximum(np.maximum(sx - xs, xs - (sx + w - 1)), 0)
+        ey = np.maximum(np.maximum(sy - ys, ys - (sy + h - 1)), 0)
+        dist = np.hypot(ex[None, :], ey[:, None])
+        shade = 1 - depth * np.clip(1 - dist / shadow, 0, 1)
+        out = (b * shade[..., None] + 0.5).astype(np.uint8)
+        x0, x1 = max(sx, 0), min(sx + w, w)
+        y0, y1 = max(sy, 0), min(sy + h, h)
+        if x0 < x1 and y0 < y1:
+            out[y0:y1, x0:x1] = a[y0 - sy:y1 - sy, x0 - sx:x1 - sx]
+        return out
+    return run
+
+
 def make_blinds(rng, w, h):
     """Venetian blinds: n stripes open simultaneously."""
     vertical = rng.random() < 0.5
@@ -413,6 +440,7 @@ TRANSITIONS = {
     "fade": make_fade,
     "wipe": make_wipe,
     "push": make_push,
+    "stack": make_stack,
     "blinds": make_blinds,
     "dissolve": make_dissolve,
     "iris": make_iris,

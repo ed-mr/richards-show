@@ -235,12 +235,54 @@ def test_transition_deterministic_per_seed(name):
     assert np.array_equal(t1(a, b, 0.5), t2(a, b, 0.5))
 
 
-@pytest.mark.parametrize("name", ["wipe", "push", "iris", "dissolve", "blinds", "split", "zoom"])
+@pytest.mark.parametrize("name", ["wipe", "push", "stack", "iris", "dissolve", "blinds", "split", "zoom"])
 def test_transition_varies_between_runs(name):
     a, b = noise(1), noise(2)
     outs = {fbs.make_transition(name, random.Random(s), (W, H))(a, b, 0.5).tobytes()
             for s in range(30)}
     assert len(outs) > 1
+
+
+STACK_DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+
+def test_stack_next_picture_waits_below():
+    """The revealed part of b is b itself, in place, and only ever grows."""
+    a, b = np.zeros((H, W, 3), np.uint8), noise(2)
+    for seed in range(16):
+        t = fbs.make_transition("stack", random.Random(seed), (W, H))
+        prev = np.zeros((H, W), bool)
+        for p in (0.1, 0.3, 0.5, 0.7, 0.9):
+            exact_b = (t(a, b, p) == b).all(axis=2) & b.any(axis=2)
+            assert (exact_b | ~prev).all(), (seed, p)  # never covered again
+            prev = exact_b
+        assert prev.mean() > 0.5  # most of b visible near the end
+
+
+def test_stack_current_picture_slides_unchanged():
+    """The visible part of a is an exact, shifted copy of a (no scaling, no blending)."""
+    a, b = noise(1), np.zeros((H, W, 3), np.uint8)
+    p = 0.4
+    seen = set()
+    for seed in range(40):
+        out = fbs.make_transition("stack", random.Random(seed), (W, H))(a, b, p)
+        for dx, dy in STACK_DIRS:
+            sx, sy = dx * round(W * p), dy * round(H * p)
+            x0, x1, y0, y1 = max(sx, 0), min(sx + W, W), max(sy, 0), min(sy + H, H)
+            if np.array_equal(out[y0:y1, x0:x1], a[y0 - sy:y1 - sy, x0 - sx:x1 - sx]):
+                seen.add((dx, dy))
+                break
+        else:
+            pytest.fail(f"seed {seed}: no shifted copy of a found")
+    assert len(seen) >= 6  # directions really vary
+
+
+def test_stack_shadow_darkens_only_near_the_edge():
+    a, b = np.zeros((H, W, 3), np.uint8), np.full((H, W, 3), 200, np.uint8)
+    out = fbs.make_stack(random.Random(0), W, H)(a, b, 0.5)
+    revealed = out.any(axis=2)
+    assert (out[revealed] <= 200).all()
+    assert (out[revealed] < 200).any() and (out[revealed] == 200).any()
 
 
 def test_make_transition_unknown():

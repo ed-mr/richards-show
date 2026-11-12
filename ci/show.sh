@@ -81,8 +81,16 @@ signal_pause() {  # $1 = wanted state: pause | resume
         return 0
     fi
     sc kill --signal=USR1 --kill-whom=main "$UNIT"
-    sleep 0.5
-    if paused; then echo "paused"; else echo "running"; fi
+    # the PAUSED/RESUMED line can take a moment to reach the journal
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        if { [ "$1" = pause ] && paused; } || { [ "$1" = resume ] && ! paused; }; then
+            echo "${1}d"
+            return 0
+        fi
+        sleep 0.25
+    done
+    echo "signal sent, but state not confirmed in the log (check: make status)" >&2
+    return 1
 }
 
 status() {

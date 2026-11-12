@@ -34,7 +34,7 @@ Geometry, color depth and stride are read from sysfs
 | `--duration S` | 1.2 | transition duration (env `DURATION`) |
 | `--shuffle` | off | random order |
 | `--fill` | off | image fills the display (cropped) instead of being fitted |
-| `--transitions LIST` | all | comma-separated from `fade,wipe,push,blinds,dissolve,iris,zoom,split` |
+| `--transitions LIST` | all | comma-separated from `fade,wipe,push,stack,blinds,dissolve,iris,zoom,split` |
 | `--invert auto\|on\|off` | auto | panel inversion |
 | `--size WxH`, `--bpp N` | from sysfs | manual override of the framebuffer values |
 | `--gamma G` | 1.0 | gamma correction (env `GAMMA`) |
