@@ -20,7 +20,8 @@
 # "make deploy HYDRA=<address>".
 
 HYDRA_CANDIDATES ?= 192.168.4.203 hydra 192.168.4.142
-DEPLOY_DIR ?= fb-slideshow
+# fixed: ci/fb-slideshow.service runs %h/fb-slideshow
+DEPLOY_DIR := fb-slideshow
 SHOW_ARGS  ?=
 PYTHON_VERSION ?= 3.13.5
 
@@ -65,7 +66,7 @@ test-hydra: $(VENV)/.stamp
 	if [ "$$local" != "$$remote" ]; then \
 		echo "version mismatch: update requirements-ci.txt / PYTHON_VERSION" >&2; exit 1; fi
 	$(SSH) $(HYDRA) 'cd $(DEPLOY_DIR) && PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider'
-	$(SSH) $(HYDRA) 'systemd-analyze --user verify ~/.config/systemd/user/fb-slideshow.service && echo "service file ok"'
+	$(SSH) $(HYDRA) 'cmp $(DEPLOY_DIR)/ci/fb-slideshow.service ~/.config/systemd/user/fb-slideshow.service && systemd-analyze --user verify ~/.config/systemd/user/fb-slideshow.service && echo "service file ok (installed = repo copy)"'
 
 start stop restart pause resume status:
 	@$(SSH) $(HYDRA) '$(DEPLOY_DIR)/ci/show.sh $@'

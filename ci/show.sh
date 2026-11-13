@@ -37,13 +37,11 @@ paused() {
 
 install_unit() {
     mkdir -p "$UNIT_DIR"
-    tmp=$(mktemp)
-    sed "s#@DIR@#$DIR#g" "$DIR/ci/fb-slideshow.service" >"$tmp"
-    # only write when changed (keeps SD-card writes down)
-    if cmp -s "$tmp" "$UNIT_DIR/$UNIT"; then
-        rm -f "$tmp"
-    else
-        mv "$tmp" "$UNIT_DIR/$UNIT"
+    [ "$DIR" = "$HOME/fb-slideshow" ] ||
+        echo "warning: deployed to $DIR, but the service runs ~/fb-slideshow" >&2
+    # plain copy; only written when changed (keeps SD-card writes down)
+    if ! cmp -s "$DIR/ci/$UNIT" "$UNIT_DIR/$UNIT"; then
+        cp "$DIR/ci/$UNIT" "$UNIT_DIR/$UNIT"
         sc daemon-reload
         echo "service file updated"
     fi
