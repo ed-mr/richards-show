@@ -12,8 +12,14 @@
 #                      set the show's options (kept across reboots and
 #                      deploys); SHOW_ARGS= resets to defaults
 #   make ci            test + deploy + test-hydra + restart (what CI runs)
+#   make hydra-host    show which address of hydra is used
+#
+# hydra is reached at the first of HYDRA_CANDIDATES that answers over ssh:
+# the WireGuard VPN address (works from any network), then the name "hydra"
+# (/etc/hosts, home LAN), then hydra's Wi-Fi address. Force one with
+# "make deploy HYDRA=<address>".
 
-HYDRA      ?= hydra
+HYDRA_CANDIDATES ?= 192.168.4.203 hydra 192.168.4.142
 DEPLOY_DIR ?= fb-slideshow
 SHOW_ARGS  ?=
 PYTHON_VERSION ?= 3.13.5
@@ -23,10 +29,19 @@ VENV := .venv-ci
 SSH  := ssh -o BatchMode=yes -o ConnectTimeout=10
 SCP  := scp -q -o BatchMode=yes -o ConnectTimeout=10
 
+# Probed only when a target needs hydra, and only once per make run
+# (the variable replaces itself with the result).
+ifeq ($(origin HYDRA),undefined)
+HYDRA = $(eval HYDRA := $(call find_hydra))$(HYDRA)
+endif
+find_hydra = $(or $(shell for h in $(HYDRA_CANDIDATES); do \
+	ssh -o BatchMode=yes -o ConnectTimeout=4 "$$h" true 2>/dev/null && { echo "$$h"; break; }; \
+	done),$(error hydra not reachable via any of: $(HYDRA_CANDIDATES)))
+
 DEPLOY_FILES := fb-slideshow.py test_fb_slideshow.py requirements.txt
 VERSIONS := import sys, numpy, PIL; print(sys.version.split()[0], numpy.__version__, PIL.__version__)
 
-.PHONY: test deploy test-hydra start stop restart pause resume status config measure-fps ci clean
+.PHONY: test deploy test-hydra start stop restart pause resume status config measure-fps ci clean hydra-host
 
 $(VENV)/.stamp: requirements-ci.txt
 	$(UV) venv -q --clear --python $(PYTHON_VERSION) $(VENV)
@@ -69,3 +84,6 @@ ci: test deploy test-hydra restart
 
 clean:
 	rm -rf $(VENV)
+
+hydra-host:
+	@echo $(HYDRA)

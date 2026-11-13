@@ -136,6 +136,12 @@ after boot. Logs go to the journal, which is kept in RAM on hydra.
 
 Everything is driven from itaka with `make` (ssh/scp to hydra):
 
+hydra is reached at the first address that answers over ssh: the WireGuard
+VPN address `192.168.4.203` (works from any network), then the name `hydra`
+(`/etc/hosts`, home LAN), then the Wi-Fi address `192.168.4.142`
+(`HYDRA_CANDIDATES` in the Makefile). `make hydra-host` shows which one is
+used; `make deploy HYDRA=<address>` forces one.
+
 | Command | What it does |
 |---|---|
 | `make test` | tests on itaka, with hydra's Python / numpy / Pillow versions (`requirements-ci.txt`) |
@@ -147,6 +153,7 @@ Everything is driven from itaka with `make` (ssh/scp to hydra):
 | `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options (kept across reboots and deploys; `SHOW_ARGS=` resets) |
 | `make measure-fps` | frame rate of transitions on the real panel (stops the show meanwhile) |
 | `make ci` | test + deploy + test-hydra + restart |
+| `make hydra-host` | which address of hydra is used |
 
 GitHub Actions runs the same steps on a self-hosted runner on itaka: the
 tests on every push and pull request, and on pushes to `main` also deploy
