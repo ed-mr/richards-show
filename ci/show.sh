@@ -5,8 +5,9 @@
 #
 #   show.sh install                 install/update and enable the service
 #   show.sh start|stop|restart|pause|resume|status
-#   show.sh config "<options>"      set options for fb-slideshow.py
-#                                   (empty = defaults), restarts if running
+#   show.sh config "<options>"      set options for fb-slideshow.py, on top
+#                                   of the service's DEFAULT_ARGS (empty =
+#                                   defaults only), restarts if running
 #
 # Logs go to the journal, which is volatile (RAM) on hydra.
 set -eu
@@ -21,6 +22,12 @@ export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 sc() { systemctl --user "$@"; }
 
 active() { sc is-active --quiet "$UNIT"; }
+
+default_args() {
+    # DEFAULT_ARGS from the service file (installed copy, else the deployed one)
+    f=$UNIT_DIR/$UNIT; [ -f "$f" ] || f=$DIR/ci/$UNIT
+    sed -n 's/^Environment="DEFAULT_ARGS=\(.*\)"$/\1/p' "$f"
+}
 
 log_lines() {
     # messages of the current run only
@@ -61,8 +68,10 @@ install_unit() {
 
 configure() {
     # check first: a bad option would make the service fail on every restart
+    # (checked together with the defaults, as the service will start it)
     # shellcheck disable=SC2086  # options are meant to be split
-    if ! out=$(PYTHONDONTWRITEBYTECODE=1 python3 "$DIR/fb-slideshow.py" $1 --check 2>&1); then
+    if ! out=$(PYTHONDONTWRITEBYTECODE=1 python3 "$DIR/fb-slideshow.py" \
+            $(default_args) $1 --check 2>&1); then
         echo "invalid options, nothing changed:" >&2
         printf '%s\n' "$out" | grep -E 'error:' >&2 || printf '%s\n' "$out" >&2
         return 1
@@ -72,7 +81,8 @@ configure() {
     if [ "$(cat "$CONF" 2>/dev/null)" != "$new" ]; then
         printf '%s\n' "$new" >"$CONF"
     fi
-    echo "options: ${1:-(defaults)}"
+    echo "defaults: $(default_args)"
+    echo "options:  ${1:-(none, defaults only)}"
     if active; then sc restart "$UNIT"; echo "restarted"; fi
 }
 
@@ -107,7 +117,8 @@ status() {
         echo "running (pid $(sc show -p MainPID --value "$UNIT"))"
     fi
     echo "enabled at boot: $(sc is-enabled "$UNIT" 2>/dev/null || echo no)"
-    echo "options: $(sed -n 's/^SHOW_ARGS=//p' "$CONF" 2>/dev/null)"
+    echo "defaults: $(default_args)"
+    echo "options:  $(sed -n 's/^SHOW_ARGS=//p' "$CONF" 2>/dev/null)"
     echo "--- log (current run)"
     log_lines | tail -n 5
 }

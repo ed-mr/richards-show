@@ -83,12 +83,19 @@ Examples:
 python3 fb-slideshow.py --transitions stack --duration 3 --easing ease-out
 
 # on hydra, from itaka (kept across reboots and deploys, restarts the show)
-make config SHOW_ARGS="--transitions stack --duration 3"
-make config SHOW_ARGS=                  # back to the defaults (hard cut)
+make config SHOW_ARGS="--duration 4"    # on top of the service defaults
+make config SHOW_ARGS=                  # back to the service defaults
 
 # from GitHub
 gh workflow run show.yml -f action=config -f show_args="--transitions stack"
 ```
+
+On hydra the service always starts the show with
+`--transitions stack --duration 3 --easing ease-out` (`DEFAULT_ARGS` in
+`ci/fb-slideshow.service`, changed by editing that file and `make deploy`).
+Options saved with `make config` come after them, so they add to these
+defaults and win where they set the same option (e.g. `--transitions cut`).
+The program's own defaults in the table above apply when it is started by hand.
 
 To repeat a run exactly, take the seed from the start line in the log
 (`make status`) and pass it with `--seed`.
@@ -151,7 +158,7 @@ used; `make deploy HYDRA=<address>` forces one.
 | `make start` / `stop` / `restart` | control the service |
 | `make pause` / `resume` | pause or resume (`SIGUSR1`), the image stays |
 | `make status` | state, boot setting, options, recent log |
-| `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options, replacing the previous ones (kept across reboots and deploys; `SHOW_ARGS=` resets to the defaults). Invalid options are rejected and nothing changes |
+| `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options on top of the service defaults, replacing the previously saved ones (kept across reboots and deploys; `SHOW_ARGS=` goes back to the service defaults). Invalid options are rejected and nothing changes |
 | `make measure-fps` | frame rate of transitions on the real panel (stops the show meanwhile) |
 | `make ci` | test + deploy + test-hydra + restart |
 | `make hydra-host` | which address of hydra is used |
