@@ -45,6 +45,7 @@ Geometry, color depth and stride are read from sysfs
 | `--dither` | off | Bayer dithering during RGB565 conversion |
 | `--testcard [bars\|ramps]` | – | show a test card instead of the slideshow |
 | `--once` | off | only one round, then exit |
+| `--check` | – | only check the options, then exit (display untouched) |
 
 `--gamma`, `--limit`, `--black` and `--dither` are corrections for
 panels with a wrong initialization. With the matching overlay they are
@@ -150,7 +151,7 @@ used; `make deploy HYDRA=<address>` forces one.
 | `make start` / `stop` / `restart` | control the service |
 | `make pause` / `resume` | pause or resume (`SIGUSR1`), the image stays |
 | `make status` | state, boot setting, options, recent log |
-| `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options (kept across reboots and deploys; `SHOW_ARGS=` resets) |
+| `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options, replacing the previous ones (kept across reboots and deploys; `SHOW_ARGS=` resets to the defaults). Invalid options are rejected and nothing changes |
 | `make measure-fps` | frame rate of transitions on the real panel (stops the show meanwhile) |
 | `make ci` | test + deploy + test-hydra + restart |
 | `make hydra-host` | which address of hydra is used |

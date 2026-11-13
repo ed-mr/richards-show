@@ -60,6 +60,13 @@ install_unit() {
 }
 
 configure() {
+    # check first: a bad option would make the service fail on every restart
+    # shellcheck disable=SC2086  # options are meant to be split
+    if ! out=$(PYTHONDONTWRITEBYTECODE=1 python3 "$DIR/fb-slideshow.py" $1 --check 2>&1); then
+        echo "invalid options, nothing changed:" >&2
+        printf '%s\n' "$out" | grep -E 'error:' >&2 || printf '%s\n' "$out" >&2
+        return 1
+    fi
     mkdir -p "$CONF_DIR"
     new="SHOW_ARGS=$1"
     if [ "$(cat "$CONF" 2>/dev/null)" != "$new" ]; then

@@ -909,3 +909,24 @@ def test_show_with_stack_writes_only_to_the_framebuffer(tmp_path):
         writes, _writes = _writes, None
     assert rc == 0
     assert set(writes) == {str(fb)}
+
+
+# ------------------------------------------------------------ option check
+def test_check_accepts_valid_options_without_touching_the_display(capsys):
+    # the framebuffer does not exist: --check must not open it
+    assert fbs.main(["--fb", "/dev/doesnotexist9", "--transitions", "stack",
+                     "--shuffle", "--hold", "5", "--check"]) == 0
+    assert "options ok" in capsys.readouterr().out
+    assert fbs.main(["--fb", "/dev/doesnotexist9", "--check"]) == 0  # defaults
+
+
+@pytest.mark.parametrize("bad", [
+    ["--shuffle=0ff"], ["--shuffle=off"], ["--transitions", "bogus"],
+    ["--hold", "five"], ["--easing", "bounce"], ["--limit", "85", "--black", "90"],
+    ["--unknown"],
+])
+def test_check_rejects_bad_options(bad, capsys):
+    with pytest.raises(SystemExit) as e:
+        fbs.main(["--fb", "/dev/doesnotexist9", *bad, "--check"])
+    assert e.value.code == 2
+    assert "error:" in capsys.readouterr().err
