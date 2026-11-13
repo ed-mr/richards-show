@@ -1,7 +1,12 @@
 # systemd user service for the slideshow on hydra.
-# Installed by "ci/show.sh install" (part of "make deploy"), which replaces
-# @DIR@ with the deploy directory. Starts at boot because linger is enabled
-# for the user (loginctl enable-linger).
+# Deployed to ~/fb-slideshow/ci/ and copied unchanged to
+# ~/.config/systemd/user/ by "ci/show.sh install" (part of "make deploy").
+# By hand on hydra:
+#   cp ~/fb-slideshow/ci/fb-slideshow.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user restart fb-slideshow.service
+# Starts at boot because linger is enabled for the user (loginctl
+# enable-linger). %h is the user's home directory.
 #
 # Options for fb-slideshow.py: SHOW_ARGS in ~/.config/fb-slideshow/env,
 # set with "make config SHOW_ARGS='--shuffle --hold 20'".
@@ -14,10 +19,10 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=@DIR@
+WorkingDirectory=%h/fb-slideshow
 Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 SHOW_ARGS=
 EnvironmentFile=-%h/.config/fb-slideshow/env
-ExecStart=/usr/bin/python3 @DIR@/fb-slideshow.py $SHOW_ARGS
+ExecStart=/usr/bin/python3 %h/fb-slideshow/fb-slideshow.py $SHOW_ARGS
 # exit code 2 = framebuffer not readable yet; SIGTERM exits cleanly with 0
 Restart=on-failure
 RestartSec=5

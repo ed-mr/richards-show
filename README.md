@@ -166,3 +166,13 @@ gh workflow run show.yml -f action=config -f show_args="--shuffle"
 
 On hydra itself: `systemctl --user status fb-slideshow`,
 `journalctl --user-unit fb-slideshow`.
+
+The service file in the repo (`ci/fb-slideshow.service`) is installed
+unchanged; `make deploy` copies it and reloads systemd when it changed. By
+hand on hydra:
+
+```bash
+cp ~/fb-slideshow/ci/fb-slideshow.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user restart fb-slideshow.service
+```
