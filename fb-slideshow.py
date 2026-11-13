@@ -644,6 +644,8 @@ def parse_args(argv, env=os.environ):
                     help="random seed (order with --shuffle, transition variations); "
                          "default: new each start, logged so a run can be repeated")
     ap.add_argument("--once", action="store_true", help="only one round (testing)")
+    ap.add_argument("--check", action="store_true",
+                    help="only check the options, then exit (display untouched)")
     args = ap.parse_args(argv)
     names = [t.strip() for t in args.transitions.split(",") if t.strip()]
     bad = [t for t in names if t not in TRANSITIONS]
@@ -657,6 +659,9 @@ def parse_args(argv, env=os.environ):
 
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.check:
+        print("options ok")
+        return 0
     if args.size:
         bpp = args.bpp or 16
         info = FbInfo(args.size[0], args.size[1], bpp, args.size[0] * bpp // 8)

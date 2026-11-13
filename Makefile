@@ -9,8 +9,9 @@
 #   make start|stop|restart|pause|resume|status
 #                      control the show on hydra (ssh -> systemctl --user)
 #   make config SHOW_ARGS="--shuffle --hold 20"
-#                      set the show's options (kept across reboots and
-#                      deploys); SHOW_ARGS= resets to defaults
+#                      set the show's options, on top of DEFAULT_ARGS in
+#                      ci/fb-slideshow.service (kept across reboots and
+#                      deploys); SHOW_ARGS= goes back to the defaults
 #   make ci            test + deploy + test-hydra + restart (what CI runs)
 #   make hydra-host    show which address of hydra is used
 #

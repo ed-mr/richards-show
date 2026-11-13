@@ -3,6 +3,7 @@ import itertools
 import pathlib
 import os
 import random
+import re
 import sys
 
 import numpy as np
@@ -909,3 +910,46 @@ def test_show_with_stack_writes_only_to_the_framebuffer(tmp_path):
         writes, _writes = _writes, None
     assert rc == 0
     assert set(writes) == {str(fb)}
+
+
+# ------------------------------------------------------------ option check
+def test_check_accepts_valid_options_without_touching_the_display(capsys):
+    # the framebuffer does not exist: --check must not open it
+    assert fbs.main(["--fb", "/dev/doesnotexist9", "--transitions", "stack",
+                     "--shuffle", "--hold", "5", "--check"]) == 0
+    assert "options ok" in capsys.readouterr().out
+    assert fbs.main(["--fb", "/dev/doesnotexist9", "--check"]) == 0  # defaults
+
+
+@pytest.mark.parametrize("bad", [
+    ["--shuffle=0ff"], ["--shuffle=off"], ["--transitions", "bogus"],
+    ["--hold", "five"], ["--easing", "bounce"], ["--limit", "85", "--black", "90"],
+    ["--unknown"],
+])
+def test_check_rejects_bad_options(bad, capsys):
+    with pytest.raises(SystemExit) as e:
+        fbs.main(["--fb", "/dev/doesnotexist9", *bad, "--check"])
+    assert e.value.code == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def _service_default_args():
+    unit = pathlib.Path(__file__).with_name("ci") / "fb-slideshow.service"
+    m = re.search(r'^Environment="DEFAULT_ARGS=(.*)"$', unit.read_text(), re.M)
+    assert m, "DEFAULT_ARGS missing in ci/fb-slideshow.service"
+    return m.group(1).split()
+
+
+def test_service_default_args_are_valid():
+    assert fbs.main(["--fb", "/dev/doesnotexist9", *_service_default_args(),
+                     "--check"]) == 0
+
+
+def test_saved_options_override_service_defaults():
+    # the service runs: fb-slideshow.py $DEFAULT_ARGS $SHOW_ARGS
+    args = fbs.parse_args([*_service_default_args(), "--transitions", "cut",
+                           "--shuffle"], env={})
+    assert args.transitions == ["cut"]
+    assert args.shuffle
+    args = fbs.parse_args(_service_default_args(), env={})
+    assert args.duration == 3 and args.easing == "ease-out"
