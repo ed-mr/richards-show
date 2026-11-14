@@ -44,6 +44,10 @@ Geometry, color depth and stride are read from sysfs
 | `--black R,G,B` | 0 | black point per channel (env `BLACK`) |
 | `--dither` | off | Bayer dithering during RGB565 conversion |
 | `--testcard [bars\|ramps]` | – | show a test card instead of the slideshow |
+| `--clock`, `--no-clock` | on | 7-segment clock in the lower left corner, see [Clock](#clock) (env `CLOCK=off`) |
+| `--clock-hours H` | 48 | keep the clock this long after the last time sync (env `CLOCK_HOURS`) |
+| `--clock-sync-file F` | `/run/systemd/timesync/synchronized` | file touched on every time sync (env `CLOCK_SYNC_FILE`) |
+| `--diagonal IN` | 3.5 | display diagonal in inches, sets the clock's size (env `DIAGONAL`) |
 | `--once` | off | only one round, then exit |
 | `--check` | – | only check the options, then exit (display untouched) |
 
@@ -111,6 +115,26 @@ so the panel can show at most **6.1 frames/s**. A 2 s `stack` transition
 reaches **~4.9 frames/s** on the panel (about 10 full frames). The CPU is not
 the limit (the program renders ~8 frames/s); only a higher SPI clock would
 make transitions smoother.
+
+## Clock
+
+A white 7-segment clock (`HH:MM`, 24 h, leading zero blanked) lies over the
+pictures in the lower left corner: 1 cm high, 0.5 cm from the left and the
+bottom edge (computed from the display diagonal, `--diagonal`). A soft dark
+rim keeps it readable on bright pictures. It also stays in place during
+transitions and while paused.
+
+It is only shown while the time can be trusted. hydra has no hardware
+clock, so after power-on the time is wrong until the first network sync:
+
+- after power-on: no clock until systemd-timesyncd has synchronized the time
+  (it touches `/run/systemd/timesync/synchronized`, in RAM, on every sync)
+- sync lost (no network): the clock stays for 48 h after the last sync
+  (`--clock-hours`), then it vanishes until the next sync
+
+At each new minute only the clock's rows are rewritten, so the SPI bus sends
+about a quarter of a frame. Switch it off with `--no-clock`, e.g.
+`make config SHOW_ARGS="--no-clock"`.
 
 ## Pause and exit
 
