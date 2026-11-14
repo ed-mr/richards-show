@@ -119,8 +119,8 @@ make transitions smoother.
 ## Clock
 
 A white 7-segment clock (`HH:MM`, 24 h, leading zero blanked) lies over the
-pictures in the lower left corner: 1 cm high, 0.5 cm from the left and the
-bottom edge (computed from the display diagonal, `--diagonal`). A soft dark
+pictures in the lower left corner: 0.5 cm high, 0.25 cm from the left and
+the bottom edge (computed from the display diagonal, `--diagonal`). A soft dark
 rim keeps it readable on bright pictures. It also stays in place during
 transitions and while paused.
 

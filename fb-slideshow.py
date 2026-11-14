@@ -185,8 +185,8 @@ def encode_frame(frame, info, invert, dither=False):
 # --------------------------------------------------------------------------
 TIMESYNC_FILE = "/run/systemd/timesync/synchronized"
 DISPLAY_DIAGONAL_IN = 3.5
-CLOCK_MARGIN_CM = 0.5   # from the left and the bottom edge
-CLOCK_HEIGHT_CM = 1.0   # digit height
+CLOCK_MARGIN_CM = 0.25  # from the left and the bottom edge
+CLOCK_HEIGHT_CM = 0.5   # digit height
 CLOCK_SLANT = 0.10      # forward slant of the digits (dx per height)
 
 # segments a b c d e f g of the digits 0-9

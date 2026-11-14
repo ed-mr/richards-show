@@ -1001,10 +1001,10 @@ def test_clock_size_and_position_lower_left():
     out = ov.apply(np.zeros((PH, PW, 3), np.uint8), "88:88")
     ys, xs = np.nonzero(out.min(axis=2) > 200)
     px_cm = math.hypot(PW, PH) / (3.5 * 2.54)
-    assert abs(xs.min() - 0.5 * px_cm) <= 2          # 0.5 cm from the left
-    assert abs((PH - 1 - ys.max()) - 0.5 * px_cm) <= 2  # 0.5 cm from the bottom
-    assert abs((ys.max() - ys.min() + 1) - px_cm) <= 2   # 1 cm high
-    assert xs.max() < PW * 0.55  # HH:MM is about 3.3 cm wide
+    assert abs(xs.min() - 0.25 * px_cm) <= 2          # 0.25 cm from the left
+    assert abs((PH - 1 - ys.max()) - 0.25 * px_cm) <= 2  # 0.25 cm from the bottom
+    assert abs((ys.max() - ys.min() + 1) - 0.5 * px_cm) <= 2   # 0.5 cm high
+    assert xs.max() < PW * 0.3  # HH:MM is about 1.7 cm wide
     assert out.max() == 255 and out[ys, xs].min() > 200  # white
 
 
@@ -1031,7 +1031,7 @@ def test_clock_apply_keeps_the_input_and_none_draws_nothing():
 
 def test_clock_does_not_fit_a_tiny_display():
     with pytest.raises(ValueError):
-        fbs.ClockOverlay((W, H), Sync(), diagonal_in=0.35)  # 1 cm > 32 px
+        fbs.ClockOverlay((W, H), Sync(), diagonal_in=0.2)  # 0.5 cm > 32 px
 
 
 def _fb_display(tmp_path, overlay):
