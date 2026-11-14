@@ -10,6 +10,7 @@ that is the only way to render transition frames. As with fb-image-watcher.sh:
  - the waveshare35a overlay drives the panel with inverted colors
    -> detected from the device tree (or forced with --invert on/off)
 
+Clock:             7-segment HH:MM lower left, only while the time is synced
 Pause/resume:      kill -USR1 <pid>   (or pkill -USR1 -f fb-slideshow.py)
 Color diagnostics: --testcard [bars|ramps] [--gamma 2.0 | R,G,B]
 
@@ -179,26 +180,196 @@ def encode_frame(frame, info, invert, dither=False):
     return out.tobytes()
 
 
+# --------------------------------------------------------------------------
+# Clock (7-segment, lower left corner)
+# --------------------------------------------------------------------------
+TIMESYNC_FILE = "/run/systemd/timesync/synchronized"
+DISPLAY_DIAGONAL_IN = 3.5
+CLOCK_MARGIN_CM = 0.25  # from the left and the bottom edge
+CLOCK_HEIGHT_CM = 0.5   # digit height
+CLOCK_SLANT = 0.10      # forward slant of the digits (dx per height)
+
+# segments a b c d e f g of the digits 0-9
+SEGMENTS = {
+    "0": "abcdef", "1": "bc", "2": "abged", "3": "abgcd", "4": "fgbc",
+    "5": "afgcd", "6": "afgedc", "7": "abc", "8": "abcdefg", "9": "abcdfg",
+}
+
+
+class TimeSync:
+    """Is the system time trustworthy? systemd-timesyncd touches TIMESYNC_FILE
+    on every successful sync. The file is in /run (RAM), so it is missing after
+    power-on until the first sync. After the last sync the time is trusted for
+    max_age seconds."""
+
+    def __init__(self, path=TIMESYNC_FILE, max_age=48 * 3600, now=time.time):
+        self.path, self.max_age, self.now = path, max_age, now
+
+    def available(self):
+        try:
+            synced = os.stat(self.path).st_mtime
+        except OSError:
+            return False
+        return self.now() - synced <= self.max_age
+
+
+def _segment_polygons(h, w, t):
+    """Hexagonal segments of one digit (height h, width w, thickness t),
+    upright, origin top left."""
+    g = t * 0.12  # small gap between the segments
+    xl, xr = t / 2, w - t / 2
+    yt, ym, yb = t / 2, h / 2, h - t / 2
+
+    def hor(x0, x1, y):
+        x0, x1 = x0 + g, x1 - g
+        return [(x0, y), (x0 + t / 2, y - t / 2), (x1 - t / 2, y - t / 2),
+                (x1, y), (x1 - t / 2, y + t / 2), (x0 + t / 2, y + t / 2)]
+
+    def ver(x, y0, y1):
+        y0, y1 = y0 + g, y1 - g
+        return [(x, y0), (x + t / 2, y0 + t / 2), (x + t / 2, y1 - t / 2),
+                (x, y1), (x - t / 2, y1 - t / 2), (x - t / 2, y0 + t / 2)]
+
+    return {"a": hor(xl, xr, yt), "g": hor(xl, xr, ym), "d": hor(xl, xr, yb),
+            "f": ver(xl, yt, ym), "b": ver(xr, yt, ym),
+            "e": ver(xl, ym, yb), "c": ver(xr, ym, yb)}
+
+
+def render_clock(text, h, scale=4):
+    """'HH:MM' (a space blanks a digit) -> (alpha, shadow), float32 masks
+    0..1 of the same size. The shadow is a soft dark rim that keeps the white
+    digits readable on bright pictures."""
+    from PIL import ImageDraw, ImageFilter
+    pad = max(2, round(h * 0.06))
+    t, dw, gap = h * 0.15, h * 0.55, h * 0.22
+    widths = [t if c == ":" else dw for c in text]
+    W = sum(widths) + gap * (len(text) - 1) + h * CLOCK_SLANT + 2 * pad
+    H = h + 2 * pad
+    img = Image.new("L", (math.ceil(W * scale), math.ceil(H * scale)), 0)
+    draw = ImageDraw.Draw(img)
+
+    def put(points, x):  # slant and place into the image
+        draw.polygon([((pad + x + px + (h - py) * CLOCK_SLANT) * scale,
+                       (pad + py) * scale) for px, py in points], fill=255)
+
+    segs = _segment_polygons(h, dw, t)
+    x = 0.0
+    for c, cw in zip(text, widths):
+        if c == ":":
+            for cy in (h * 0.32, h * 0.68):
+                put([(0, cy - t / 2), (t, cy - t / 2), (t, cy + t / 2),
+                     (0, cy + t / 2)], x)
+        else:
+            for s in SEGMENTS.get(c, ""):
+                put(segs[s], x)
+        x += cw + gap
+    size = (math.ceil(W), math.ceil(H))
+    alpha = img.resize(size, Image.BOX)
+    rim = alpha.filter(ImageFilter.MaxFilter(2 * (pad // 2) + 1)).filter(
+        ImageFilter.GaussianBlur(pad / 2))
+    return (np.asarray(alpha, np.float32) / 255,
+            np.asarray(rim, np.float32) / 255)
+
+
+class ClockOverlay:
+    """White 7-segment clock (HH:MM, 24 h) in the lower left corner; only
+    while the time is trustworthy (see TimeSync)."""
+
+    SHADOW = 0.55  # darkening at the rim
+
+    def __init__(self, size, sync, diagonal_in=DISPLAY_DIAGONAL_IN,
+                 now=time.time):
+        w, h = size
+        px_cm = math.hypot(w, h) / (diagonal_in * 2.54)
+        self.sync, self.now = sync, now
+        self.height = max(7, round(CLOCK_HEIGHT_CM * px_cm))
+        alpha, _ = render_clock("88:88", self.height)
+        pad = max(2, round(self.height * 0.06))
+        margin = round(CLOCK_MARGIN_CM * px_cm)
+        self.x0 = margin - pad
+        y_bottom = h - margin + pad
+        self.y0 = y_bottom - alpha.shape[0]
+        if self.x0 < 0 or self.y0 < 0 or self.x0 + alpha.shape[1] > w:
+            raise ValueError(f"display {w}x{h} too small for the clock")
+        # whole rows, aligned to 4 (Bayer dither phase), for partial updates
+        self.rows = (self.y0 // 4 * 4, min(h, -(-y_bottom // 4) * 4))
+        self._cache = {}
+
+    def text(self):
+        """Current 'HH:MM', or None when the clock is not to be shown."""
+        if not self.sync.available():
+            return None
+        tm = time.localtime(self.now())
+        return f"{tm.tm_hour:2d}:{tm.tm_min:02d}"  # classic: blank leading 0
+
+    def apply(self, frame, text):
+        """frame with the clock drawn in (a copy), or frame itself for None."""
+        if text is None:
+            return frame
+        if text not in self._cache:
+            self._cache = {text: render_clock(text, self.height)}
+        alpha, rim = self._cache[text]
+        h, w = alpha.shape
+        out = frame.copy()
+        box = out[self.y0:self.y0 + h, self.x0:self.x0 + w].astype(np.float32)
+        box *= (1 - self.SHADOW * rim)[..., None]
+        box += (255 - box) * alpha[..., None]
+        out[self.y0:self.y0 + h, self.x0:self.x0 + w] = np.round(box).astype(np.uint8)
+        return out
+
+
 class Display:
     def __init__(self, dev, info, invert, gamma=1.0, limit=255.0, dither=False,
-                 black=0.0):
+                 black=0.0, overlay=None):
         self.info = info
         self.invert = invert
         self.gamma = gamma
         self.limit = limit
         self.dither = dither
         self.black = black
+        self.overlay = overlay
         self.size = (info.width, info.height)
+        self._frame = None   # last frame, without overlay
+        self._text = None    # overlay text on the panel
         length = info.stride * info.height
         self._f = open(dev, "r+b")
         if stat.S_ISREG(os.fstat(self._f.fileno()).st_mode):
             self._f.truncate(length)  # tests: regular file as fake framebuffer
         self._m = mmap.mmap(self._f.fileno(), length)
 
-    def show(self, frame):
+    def _encode(self, frame):
         frame = apply_gamma(frame, self.gamma, self.limit, self.black)
-        data = encode_frame(frame, self.info, self.invert, self.dither)
+        return encode_frame(frame, self.info, self.invert, self.dither)
+
+    def _overlay_text(self):
+        text = self.overlay.text()
+        if (text is None) != (self._text is None):
+            log("clock shown (time synchronized)" if text else
+                "clock hidden (no time synchronization)")
+        return text
+
+    def show(self, frame):
+        self._frame = frame
+        if self.overlay is not None:
+            self._text = self._overlay_text()
+            frame = self.overlay.apply(frame, self._text)
+        data = self._encode(frame)
         self._m[: len(data)] = data
+
+    def refresh(self):
+        """Redraw the overlay if it changed (e.g. a new minute). Writes only
+        the clock's rows, so fbtft sends only those over SPI."""
+        if self.overlay is None or self._frame is None:
+            return
+        text = self._overlay_text()
+        if text == self._text:
+            return
+        self._text = text
+        y0, y1 = self.overlay.rows
+        rows = self.overlay.apply(self._frame, text)[y0:y1]
+        data = self._encode(rows)
+        off = y0 * self.info.stride
+        self._m[off: off + len(data)] = data
 
     def blank(self):
         """Deepest black of the panel: raw value 0, without gamma/limit/black/dither."""
@@ -554,8 +725,22 @@ def make_testcard(w, h, kind="bars"):
 
 def slideshow(display, paths, hold, duration, fill, transitions, rng,
               sleep=time.sleep, clock=time.monotonic, paused=lambda: False,
-              easing=_smooth):
+              easing=_smooth, refresh=None):
+    """refresh: called about once a second while an image stands (clock)."""
     size = display.size
+
+    def wait(seconds):
+        if refresh is None:
+            sleep(seconds)
+            return
+        end = clock() + seconds
+        while True:
+            refresh()
+            left = end - clock()
+            if left <= 0:
+                return
+            sleep(min(left, 1.0))
+
     w, h = size
     paths = iter(paths)
     loader = ThreadPoolExecutor(max_workers=1)
@@ -588,9 +773,11 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
                 run_transition(display, fn, prev, img,
                                0 if last == "cut" else duration, clock, easing)
                 prev, prev_path = img, path
-            sleep(hold)
+            wait(hold)
             while paused():  # image stays until the next SIGUSR1 arrives
                 sleep(0.2)
+                if refresh is not None:
+                    refresh()
     finally:
         loader.shutdown(wait=False, cancel_futures=True)
 
@@ -643,6 +830,22 @@ def parse_args(argv, env=os.environ):
                     default=int(env["SEED"]) if env.get("SEED") else None,
                     help="random seed (order with --shuffle, transition variations); "
                          "default: new each start, logged so a run can be repeated")
+    ap.add_argument("--clock", action=argparse.BooleanOptionalAction,
+                    default=env.get("CLOCK", "on").lower() not in ("0", "off", "no"),
+                    help="7-segment clock in the lower left corner, only while the "
+                         "time is synchronized (default on; --no-clock: off)")
+    ap.add_argument("--clock-hours", type=float,
+                    default=float(env.get("CLOCK_HOURS", 48)),
+                    help="keep the clock this many hours after the last time "
+                         "sync (default 48)")
+    ap.add_argument("--clock-sync-file", default=env.get("CLOCK_SYNC_FILE",
+                                                         TIMESYNC_FILE),
+                    help="file touched on every time sync (default: %s)"
+                         % TIMESYNC_FILE)
+    ap.add_argument("--diagonal", type=float,
+                    default=float(env.get("DIAGONAL", DISPLAY_DIAGONAL_IN)),
+                    help="display diagonal in inches, for the clock's size "
+                         "(default %s)" % DISPLAY_DIAGONAL_IN)
     ap.add_argument("--once", action="store_true", help="only one round (testing)")
     ap.add_argument("--check", action="store_true",
                     help="only check the options, then exit (display untouched)")
@@ -654,6 +857,10 @@ def parse_args(argv, env=os.environ):
     args.transitions = names
     if any(b >= li for b, li in zip(args.black, args.limit)):
         ap.error("--black must be less than --limit")
+    if args.clock_hours < 0:
+        ap.error("--clock-hours must not be negative")
+    if args.diagonal <= 0:
+        ap.error("--diagonal must be positive")
     return args
 
 
@@ -676,8 +883,17 @@ def main(argv=None):
             info = info._replace(bpp=args.bpp, stride=info.width * args.bpp // 8)
     invert = detect_invert() if args.invert == "auto" else args.invert == "on"
 
+    overlay = None
+    if args.clock and not args.testcard:
+        try:
+            overlay = ClockOverlay(
+                (info.width, info.height),
+                TimeSync(args.clock_sync_file, args.clock_hours * 3600),
+                args.diagonal)
+        except ValueError as e:
+            log(f"no clock: {e}")
     display = Display(args.fb, info, invert, args.gamma, args.limit, args.dither,
-                      args.black)
+                      args.black, overlay)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     paused = threading.Event()
 
@@ -691,7 +907,8 @@ def main(argv=None):
     log(f"Slideshow {args.directory} -> {args.fb} {info.width}x{info.height} "
         f"{info.bpp}bpp invert={invert} hold={args.hold}s "
         f"transitions={','.join(args.transitions)} duration={args.duration}s "
-        f"easing={args.easing} seed={seed}")
+        f"easing={args.easing} seed={seed} "
+        f"clock={'on' if overlay else 'off'}")
     try:
         if args.testcard:
             display.show(make_testcard(*display.size, args.testcard))
@@ -702,6 +919,7 @@ def main(argv=None):
             playlist(args.directory, args.shuffle, rng, loop=not args.once),
             args.hold, args.duration, args.fill, args.transitions, rng,
             paused=paused.is_set, easing=EASINGS[args.easing],
+            refresh=display.refresh if overlay else None,
         )
     except (KeyboardInterrupt, SystemExit):
         pass

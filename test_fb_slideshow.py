@@ -5,6 +5,8 @@ import os
 import random
 import re
 import sys
+import time
+import math
 
 import numpy as np
 import pytest
@@ -953,3 +955,199 @@ def test_saved_options_override_service_defaults():
     assert args.shuffle
     args = fbs.parse_args(_service_default_args(), env={})
     assert args.duration == 3 and args.easing == "ease-out"
+
+
+# ------------------------------------------------------------ clock
+PW, PH = 480, 320  # the real panel
+
+
+class Sync:
+    def __init__(self, ok=True):
+        self.ok = ok
+
+    def available(self):
+        return self.ok
+
+
+def at(h, m):
+    return time.mktime((2026, 11, 14, h, m, 30, 0, 0, -1))
+
+
+def test_timesync_needs_a_recent_sync(tmp_path):
+    f = tmp_path / "synchronized"
+    now = [1_000_000.0]
+    s = fbs.TimeSync(str(f), max_age=48 * 3600, now=lambda: now[0])
+    assert not s.available()  # after power-on: no sync yet
+    f.touch()
+    os.utime(f, (now[0], now[0]))
+    assert s.available()
+    now[0] += 48 * 3600 - 1
+    assert s.available()  # sync lost, still within 48 h
+    now[0] += 2
+    assert not s.available()  # then the clock vanishes
+
+
+def test_clock_text_24h_with_blank_leading_zero():
+    t = [at(9, 5)]
+    ov = fbs.ClockOverlay((PW, PH), Sync(), now=lambda: t[0])
+    assert ov.text() == " 9:05"
+    t[0] = at(23, 59)
+    assert ov.text() == "23:59"
+    assert fbs.ClockOverlay((PW, PH), Sync(False)).text() is None
+
+
+def test_clock_size_and_position_lower_left():
+    ov = fbs.ClockOverlay((PW, PH), Sync())
+    out = ov.apply(np.zeros((PH, PW, 3), np.uint8), "88:88")
+    ys, xs = np.nonzero(out.min(axis=2) > 200)
+    px_cm = math.hypot(PW, PH) / (3.5 * 2.54)
+    assert abs(xs.min() - 0.25 * px_cm) <= 2          # 0.25 cm from the left
+    assert abs((PH - 1 - ys.max()) - 0.25 * px_cm) <= 2  # 0.25 cm from the bottom
+    assert abs((ys.max() - ys.min() + 1) - 0.5 * px_cm) <= 2   # 0.5 cm high
+    assert xs.max() < PW * 0.3  # HH:MM is about 1.7 cm wide
+    assert out.max() == 255 and out[ys, xs].min() > 200  # white
+
+
+def test_clock_draws_the_right_segments():
+    ov = fbs.ClockOverlay((PW, PH), Sync())
+    black = np.zeros((PH, PW, 3), np.uint8)
+    lit = {t: (ov.apply(black, t).min(axis=2) > 128).sum()
+           for t in (" 1:11", " 8:88", " 7:00")}
+    assert lit[" 1:11"] < lit[" 7:00"] < lit[" 8:88"]
+    assert (ov.apply(black, " 0:00") != ov.apply(black, " 8:00")).any()
+
+
+def test_clock_apply_keeps_the_input_and_none_draws_nothing():
+    ov = fbs.ClockOverlay((PW, PH), Sync())
+    frame = np.full((PH, PW, 3), 100, np.uint8)
+    keep = frame.copy()
+    out = ov.apply(frame, "12:34")
+    assert np.array_equal(frame, keep)
+    assert (out != frame).any()
+    y0, y1 = ov.rows
+    assert np.array_equal(out[:y0], frame[:y0]) and np.array_equal(out[y1:], frame[y1:])
+    assert ov.apply(frame, None) is frame
+
+
+def test_clock_does_not_fit_a_tiny_display():
+    with pytest.raises(ValueError):
+        fbs.ClockOverlay((W, H), Sync(), diagonal_in=0.2)  # 0.5 cm > 32 px
+
+
+def _fb_display(tmp_path, overlay):
+    info = fbs.FbInfo(PW, PH, 16, PW * 2)
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    return fbs.Display(str(fb), info, False, overlay=overlay), fb
+
+
+def test_display_refresh_rewrites_only_the_clock_rows(tmp_path):
+    t = [at(12, 34)]
+    sync = Sync()
+    ov = fbs.ClockOverlay((PW, PH), sync, now=lambda: t[0])
+    d, fb = _fb_display(tmp_path, ov)
+    img = np.full((PH, PW, 3), 60, np.uint8)
+    d.show(img)
+    d._m.flush()
+    first = np.frombuffer(fb.read_bytes(), "<u2").reshape(PH, PW).copy()
+    writes = []
+    real = d._m
+
+    class Spy:  # records which byte ranges are written
+        def __setitem__(self, k, v):
+            writes.append((k.start, k.stop))
+            real[k] = v
+
+    d._m = Spy()
+    d.refresh()
+    assert writes == []  # same minute: nothing written
+    t[0] = at(12, 35)
+    d.refresh()
+    y0, y1 = ov.rows
+    assert writes == [(y0 * PW * 2, y1 * PW * 2)]
+    d._m = real
+    d._m.flush()
+    second = np.frombuffer(fb.read_bytes(), "<u2").reshape(PH, PW)
+    assert (second != first).any()
+    assert np.array_equal(second[:y0], first[:y0])
+    assert np.array_equal(second, fbs.np.frombuffer(
+        fbs.encode_frame(ov.apply(img, "12:35"), d.info, False), "<u2").reshape(PH, PW))
+    sync.ok = False  # sync too old: the clock vanishes, the picture is back
+    d.refresh()
+    d._m.flush()
+    plain = np.frombuffer(fbs.encode_frame(img, d.info, False), "<u2").reshape(PH, PW)
+    assert np.array_equal(np.frombuffer(fb.read_bytes(), "<u2").reshape(PH, PW), plain)
+    d.close()
+
+
+def test_display_without_overlay_is_unchanged(tmp_path):
+    d, fb = _fb_display(tmp_path, None)
+    img = noise(3)
+    img = np.array(Image.fromarray(img).resize((PW, PH)))
+    d.show(img)
+    d.refresh()
+    d._m.flush()
+    assert fb.read_bytes() == fbs.encode_frame(img, d.info, False)
+    d.close()
+
+
+def test_slideshow_refreshes_the_clock_while_holding_and_paused(tmp_path):
+    for i in (1, 2):
+        mk_jpg(tmp_path / f"{i}.jpg", (255, 0, 0), size=(W, H))
+    now = [0.0]
+    sleeps, refreshes = [], []
+
+    def sleep(s):
+        sleeps.append(s)
+        now[0] += s
+
+    answers = iter([True])
+    fbs.slideshow(FakeDisplay(), fbs.list_images(str(tmp_path)), 2.5, 0, False,
+                  ["cut"], random.Random(0), sleep=sleep, clock=lambda: now[0],
+                  paused=lambda: next(answers, False),
+                  refresh=lambda: refreshes.append(now[0]))
+    assert max(sleeps) <= 1.0  # never longer than a second without a refresh
+    assert sum(s for s in sleeps if s != 0.2) == pytest.approx(5.0)
+    assert 0.2 in sleeps  # paused once
+    assert len(refreshes) >= 8
+
+
+def test_clock_options():
+    a = fbs.parse_args([], env={})
+    assert a.clock and a.clock_hours == 48
+    assert a.clock_sync_file == "/run/systemd/timesync/synchronized"
+    assert not fbs.parse_args(["--no-clock"], env={}).clock
+    assert not fbs.parse_args([], env={"CLOCK": "off"}).clock
+    assert fbs.parse_args(["--clock-hours", "12"], env={}).clock_hours == 12
+    for bad in (["--clock-hours", "-1"], ["--diagonal", "0"], ["--clock=yes"]):
+        with pytest.raises(SystemExit):
+            fbs.parse_args(bad, env={})
+
+
+def test_main_with_clock_end_to_end(tmp_path):
+    pics = tmp_path / "pics"
+    pics.mkdir()
+    mk_jpg(pics / "1.jpg", (0, 0, 0), size=(PW, PH))
+    sync = tmp_path / "synchronized"
+    sync.touch()
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    shown = []
+    real_show = fbs.Display.show
+
+    def spy(self, frame):
+        real_show(self, frame)
+        self._m.flush()
+        shown.append(fb.read_bytes())
+
+    fbs.Display.show = spy
+    try:
+        rc = fbs.main([str(pics), "--fb", str(fb), "--size", f"{PW}x{PH}", "--bpp",
+                       "16", "--invert", "off", "--hold", "0", "--once",
+                       "--clock-sync-file", str(sync)])
+    finally:
+        fbs.Display.show = real_show
+    assert rc == 0
+    px = np.frombuffer(shown[-1], "<u2")
+    assert (px == 0xFFFF).any()  # white clock digits on the black picture
+    assert fb.read_bytes() == b"\x00" * (PW * PH * 2)  # blanked on exit
