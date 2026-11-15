@@ -10,6 +10,7 @@ fragments that fly over the whole screen and fade out.
 
     python3 scene140.py                     # play once on /dev/fb1
     python3 scene140.py --repeat 3
+    python3 scene140.py --repeat 0          # loop until stopped (Ctrl+C)
     python3 scene140.py --preview 140.gif   # render to a GIF instead (no display)
 
 While the number is small only the rows it covers are written, so fbtft
@@ -17,6 +18,7 @@ sends less over SPI and the frame rate is higher.
 """
 import argparse
 import importlib.util
+import itertools
 import math
 import os
 import pathlib
@@ -266,7 +268,8 @@ def parse_args(argv):
                     help="seconds in the middle before the burst (default 0.6)")
     ap.add_argument("--explode", type=float, default=3.0,
                     help="seconds for the burst (default 3)")
-    ap.add_argument("--repeat", type=int, default=1, help="times to play")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="times to play; 0 = loop until stopped")
     ap.add_argument("--seed", type=int, help="random seed of the fragments")
     ap.add_argument("--size", type=fbs.parse_size, help="override, e.g. 480x320")
     ap.add_argument("--invert", choices=["auto", "on", "off"], default="auto")
@@ -274,8 +277,8 @@ def parse_args(argv):
                     help="render to an animated GIF instead of the display")
     ap.add_argument("--fps", type=float, default=12, help="frame rate of --preview")
     a = ap.parse_args(argv)
-    if min(a.travel, a.explode) <= 0 or a.pause < 0 or a.repeat < 1 or a.fps <= 0:
-        ap.error("durations, --repeat and --fps must be positive")
+    if min(a.travel, a.explode) <= 0 or a.pause < 0 or a.repeat < 0 or a.fps <= 0:
+        ap.error("durations and --fps must be positive, --repeat not negative")
     return a
 
 
@@ -297,9 +300,10 @@ def main(argv=None):
     invert = fbs.detect_invert() if a.invert == "auto" else a.invert == "on"
     display = fbs.Display(a.fb, info, invert)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))  # ssh closed
     scene = Scene((info.width, info.height), a.travel, a.pause, a.explode, a.seed)
     try:
-        for _ in range(a.repeat):
+        for _ in itertools.count() if a.repeat == 0 else range(a.repeat):
             t0 = time.monotonic()
             n = play(display, scene)
             fbs.log(f"scene 140: {n} frames in {time.monotonic() - t0:.1f} s")

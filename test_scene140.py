@@ -129,8 +129,27 @@ def test_main_on_a_fake_framebuffer(tmp_path):
     assert fb.read_bytes() == b"\x00" * (W * H * 2)
 
 
-@pytest.mark.parametrize("bad", [["--travel", "0"], ["--repeat", "0"],
+@pytest.mark.parametrize("bad", [["--travel", "0"], ["--repeat", "-1"],
                                  ["--pause", "-1"], ["--fps", "0"]])
 def test_bad_options(bad):
     with pytest.raises(SystemExit):
         sc.parse_args(bad)
+
+
+def test_repeat_0_loops_until_stopped(tmp_path, monkeypatch):
+    fb = tmp_path / "fb"
+    fb.write_bytes(b"")
+    rounds = []
+
+    def fake_play(display, scene, **kw):
+        rounds.append(1)
+        if len(rounds) == 5:
+            raise KeyboardInterrupt  # Ctrl+C
+        return 1
+
+    monkeypatch.setattr(sc, "play", fake_play)
+    assert sc.parse_args(["--repeat", "0"]).repeat == 0
+    assert sc.main(["--fb", str(fb), "--size", f"{W}x{H}", "--invert", "off",
+                    "--repeat", "0"]) == 0
+    assert len(rounds) == 5
+    assert fb.read_bytes() == b"\x00" * (W * H * 2)  # black after Ctrl+C

@@ -13,7 +13,8 @@
 #                      ci/fb-slideshow.service (kept across reboots and
 #                      deploys); SHOW_ARGS= goes back to the defaults
 #   make scene         stop the show and play the "140" scene on hydra
-#                      (SCENE_ARGS="--repeat 3"); the show stays stopped,
+#                      (SCENE_ARGS="--repeat 3", "--repeat 0" loops until
+#                      Ctrl+C); the show stays stopped,
 #                      "make start" brings it back
 #   make scene-preview render the scene to scene140.gif on this machine
 #   make ci            test + deploy + test-hydra + restart (what CI runs)
@@ -95,7 +96,8 @@ measure-fps:
 # the "140" scene (issue #11); the show stays stopped afterwards
 scene:
 	$(SSH) $(HYDRA) '$(DEPLOY_DIR)/ci/show.sh stop'
-	$(SSH) $(HYDRA) 'PYTHONDONTWRITEBYTECODE=1 python3 $(DEPLOY_DIR)/scene140.py $(SCENE_ARGS)'
+	@# -t: Ctrl+C reaches the scene on hydra
+	-$(SSH) -t $(HYDRA) 'PYTHONDONTWRITEBYTECODE=1 python3 $(DEPLOY_DIR)/scene140.py $(SCENE_ARGS)'
 	@echo "show stopped; bring it back with: make start"
 
 scene-preview: $(VENV)/.stamp

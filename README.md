@@ -149,6 +149,7 @@ about 10 s.
 ```bash
 make scene                          # stops the show, plays the scene on hydra
 make scene SCENE_ARGS="--repeat 3 --travel 8"
+make scene SCENE_ARGS="--repeat 0"  # loop until Ctrl+C
 make start                          # the show again
 make scene-preview                  # scene140.gif on itaka, to look at on a PC
 ```
@@ -158,7 +159,7 @@ make scene-preview                  # scene140.gif on itaka, to look at on a PC
 | `--travel S` | 6 | seconds for the arc into the middle |
 | `--pause S` | 0.6 | seconds in the middle before the burst |
 | `--explode S` | 3 | seconds for the burst |
-| `--repeat N` | 1 | times to play |
+| `--repeat N` | 1 | times to play; `0` = loop until stopped (Ctrl+C) |
 | `--seed N` | random | fragments of the burst |
 | `--preview GIF`, `--fps N` | – | render to an animated GIF instead of the display |
 
