@@ -37,9 +37,12 @@ HERE = pathlib.Path(__file__).resolve().parent
 FONT = HERE / "fonts" / "Ubuntu.ttf"
 TEXT = "140"
 
-_spec = importlib.util.spec_from_file_location("fbs", HERE / "fb-slideshow.py")
-fbs = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(fbs)
+if "fbs" in sys.modules:  # already loaded (by sequence.py): share it
+    fbs = sys.modules["fbs"]
+else:
+    _spec = importlib.util.spec_from_file_location("fbs", HERE / "fb-slideshow.py")
+    fbs = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(fbs)
 
 START_PT = 5.0      # font size at the start
 END_HEIGHT = 0.5    # digit height in the middle, as part of the screen height

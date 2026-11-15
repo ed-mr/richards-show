@@ -1,0 +1,21 @@
+# Sequence for the show on hydra: copy to /mnt/stick/config.yaml
+# (or: make sequence CONFIG=config.example.yaml). Without that file the
+# plain slideshow runs, as before. Changes are picked up while it runs.
+#
+# Each step is "- slideshow:" or "- scene:" with options; the option names
+# are the ones of fb-slideshow.py / scene140.py (see README), e.g.
+#   slideshow: minutes, hold, shuffle, transitions, duration, easing,
+#              fill, clock, directory
+#   scene:     repeat, travel, pause, explode, background, seed
+# Options not given come from the service (DEFAULT_ARGS, make config).
+
+loop: true            # after the last step start again (false: play once)
+sequence:
+  - scene:
+      repeat: 3
+      travel: 8
+  - slideshow:
+      minutes: 10     # without minutes: forever (only as the last step)
+      shuffle: true
+      hold: 5
+      transitions: stack

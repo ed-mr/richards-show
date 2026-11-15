@@ -729,8 +729,12 @@ def make_testcard(w, h, kind="bars"):
 
 def slideshow(display, paths, hold, duration, fill, transitions, rng,
               sleep=time.sleep, clock=time.monotonic, paused=lambda: False,
-              easing=_smooth, refresh=None):
-    """refresh: called about once a second while an image stands (clock)."""
+              easing=_smooth, refresh=None, stop=None, start=None):
+    """refresh: called about once a second while an image stands (clock).
+    stop: checked after each image's hold time; True ends the show.
+    start: frame on the display now (the first transition starts from it).
+    Returns (last frame shown, path that was preloaded but not shown or None),
+    so a following show can continue without skipping a picture."""
     size = display.size
 
     def wait(seconds):
@@ -760,7 +764,7 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
         p = next(paths, None)
         return None if p is None else loader.submit(load, p)
 
-    prev = np.zeros((h, w, 3), np.uint8)  # start from black
+    prev = np.zeros((h, w, 3), np.uint8) if start is None else start
     prev_path = None
     last = None
     fut = submit()
@@ -782,6 +786,10 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
                 sleep(0.2)
                 if refresh is not None:
                     refresh()
+            if stop is not None and stop():
+                unused = fut.result()[0] if fut is not None else None
+                return prev, unused
+        return prev, None
     finally:
         loader.shutdown(wait=False, cancel_futures=True)
 
@@ -868,11 +876,9 @@ def parse_args(argv, env=os.environ):
     return args
 
 
-def main(argv=None):
-    args = parse_args(sys.argv[1:] if argv is None else argv)
-    if args.check:
-        print("options ok")
-        return 0
+def open_display(args):
+    """(Display, clock overlay or None) from the options, or None when the
+    framebuffer geometry cannot be read (logged)."""
     if args.size:
         bpp = args.bpp or 16
         info = FbInfo(args.size[0], args.size[1], bpp, args.size[0] * bpp // 8)
@@ -882,7 +888,7 @@ def main(argv=None):
         except OSError as e:
             log(f"Cannot read framebuffer geometry of {args.fb} ({e}); "
                 f"pass --size/--bpp. Hint: dmesg | grep -i fb_ili9486")
-            return 2
+            return None
         if args.bpp:
             info = info._replace(bpp=args.bpp, stride=info.width * args.bpp // 8)
     invert = detect_invert() if args.invert == "auto" else args.invert == "on"
@@ -898,6 +904,11 @@ def main(argv=None):
             log(f"no clock: {e}")
     display = Display(args.fb, info, invert, args.gamma, args.limit, args.dither,
                       args.black, overlay)
+    return display, overlay
+
+
+def install_signals():
+    """SIGTERM exits cleanly, SIGUSR1 toggles pause. Returns the pause flag."""
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     paused = threading.Event()
 
@@ -906,13 +917,35 @@ def main(argv=None):
         log("PAUSED" if paused.is_set() else "RESUMED")
 
     signal.signal(signal.SIGUSR1, toggle)
+    return paused
+
+
+def make_rng(args):
     seed = args.seed if args.seed is not None else random.SystemRandom().randrange(2**32)
-    rng = random.Random(seed)
-    log(f"Slideshow {args.directory} -> {args.fb} {info.width}x{info.height} "
-        f"{info.bpp}bpp invert={invert} hold={args.hold}s "
-        f"transitions={','.join(args.transitions)} duration={args.duration}s "
-        f"easing={args.easing} seed={seed} "
-        f"clock={'on' if overlay else 'off'}")
+    return random.Random(seed), seed
+
+
+def describe(args, display, overlay, seed):
+    info = display.info
+    return (f"{args.directory} -> {args.fb} {info.width}x{info.height} "
+            f"{info.bpp}bpp invert={display.invert} hold={args.hold}s "
+            f"transitions={','.join(args.transitions)} duration={args.duration}s "
+            f"easing={args.easing} seed={seed} "
+            f"clock={'on' if overlay else 'off'}")
+
+
+def main(argv=None):
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.check:
+        print("options ok")
+        return 0
+    opened = open_display(args)
+    if opened is None:
+        return 2
+    display, overlay = opened
+    paused = install_signals()
+    rng, seed = make_rng(args)
+    log("Slideshow " + describe(args, display, overlay, seed))
     try:
         if args.testcard:
             display.show(make_testcard(*display.size, args.testcard))

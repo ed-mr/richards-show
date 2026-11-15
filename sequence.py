@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""Plays a sequence of slideshow and scene steps from a config file (issue #14).
+
+The service starts this instead of fb-slideshow.py. Without a config file it
+is the plain slideshow, exactly as before.
+
+    /mnt/stick/config.yaml:
+
+    loop: true              # start again from the top (default true)
+    sequence:
+      - scene:              # options as for scene140.py
+          repeat: 3
+          travel: 8
+      - slideshow:          # options as for fb-slideshow.py, plus minutes
+          minutes: 10
+          shuffle: true
+          hold: 5
+          transitions: stack
+
+A step's options replace the command-line options for that step only.
+Display options (fb, size, gamma, ...) are set on the command line, not per
+step. The file is read again at the start of every round, so changes on the
+stick take effect without a restart; if it is broken, the error is logged
+and the last good version stays in use.
+
+    python3 sequence.py [--config FILE] [fb-slideshow.py options]
+    python3 sequence.py --check            # options and config file ok?
+"""
+import argparse
+import contextlib
+import importlib.util
+import io
+import itertools
+import os
+import pathlib
+import sys
+import time
+from typing import NamedTuple, Optional
+
+import yaml
+
+HERE = pathlib.Path(__file__).resolve().parent
+DEFAULT_CONFIG = "/mnt/stick/config.yaml"
+
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, HERE / filename)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+fbs = sys.modules.get("fbs") or _load("fbs", "fb-slideshow.py")
+scene140 = sys.modules.get("scene140") or _load("scene140", "scene140.py")
+
+# set once for the display, not per step
+DISPLAY_OPTIONS = {"fb", "size", "bpp", "invert", "gamma", "limit", "black",
+                   "dither", "diagonal", "clock_hours", "clock_sync_file"}
+NOT_IN_STEPS = {"testcard", "once", "check", "preview", "fps", "config"}
+
+
+class ConfigError(ValueError):
+    pass
+
+
+class Step(NamedTuple):
+    kind: str                 # "slideshow" | "scene"
+    args: argparse.Namespace
+    seconds: Optional[float]  # slideshow: None = forever
+    text: str                 # for the log
+
+
+class Config(NamedTuple):
+    loop: bool
+    steps: list
+
+
+def to_argv(opts):
+    """{'hold': 5, 'shuffle': True, 'clock': False, 'transitions': ['a', 'b']}
+    -> ['--hold', '5', '--shuffle', '--no-clock', '--transitions', 'a,b']"""
+    argv = []
+    for key, val in opts.items():
+        flag = "--" + str(key).replace("_", "-")
+        if val is True:
+            argv.append(flag)
+        elif val is False:
+            if key == "clock":
+                argv.append("--no-clock")
+            # other switches are off unless given
+        elif isinstance(val, (list, tuple)):
+            argv += [flag, ",".join(str(v) for v in val)]
+        elif val is None:
+            raise ConfigError(f"'{key}' has no value")
+        else:
+            argv += [flag, str(val)]
+    return argv
+
+
+def _parse(parser, argv, where):
+    """Run an argparse-based parser; its error message becomes a ConfigError."""
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            return parser(argv)
+    except SystemExit:
+        msg = [line.split("error: ", 1)[1] for line in err.getvalue().splitlines()
+               if "error: " in line]
+        raise ConfigError(f"{where}: {msg[0] if msg else err.getvalue().strip()}")
+
+
+def parse_config(text, base_argv=()):
+    """config.yaml text -> Config. base_argv: the command-line options the
+    slideshow steps start from. Raises ConfigError with a readable message."""
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ConfigError(f"not valid YAML: {e}")
+    if not isinstance(data, dict):
+        raise ConfigError("expected 'sequence:' with a list of steps")
+    unknown = set(data) - {"loop", "sequence"}
+    if unknown:
+        raise ConfigError(f"unknown setting: {', '.join(sorted(map(str, unknown)))}")
+    loop = data.get("loop", True)
+    if not isinstance(loop, bool):
+        raise ConfigError("loop: must be true or false")
+    seq = data.get("sequence")
+    if not isinstance(seq, list) or not seq:
+        raise ConfigError("sequence: must be a list with at least one step")
+    steps = []
+    for i, item in enumerate(seq, 1):
+        where = f"step {i}"
+        if isinstance(item, str):
+            item = {item: None}  # "- slideshow" without options
+        if not isinstance(item, dict) or len(item) != 1:
+            raise ConfigError(f"{where}: expected '- slideshow:' or '- scene:'")
+        (kind, opts), = item.items()
+        opts = dict(opts or {})
+        if not isinstance(opts, dict):
+            raise ConfigError(f"{where} ({kind}): options must be 'name: value' lines")
+        where = f"{where} ({kind})"
+        bad = {str(k).replace("-", "_") for k in opts} & (DISPLAY_OPTIONS | NOT_IN_STEPS)
+        if bad:
+            raise ConfigError(f"{where}: '{sorted(bad)[0]}' can't be set per step "
+                              "(display options go on the command line / SHOW_ARGS)")
+        if kind == "slideshow":
+            minutes = opts.pop("minutes", None)
+            directory = opts.pop("directory", None)  # positional, set after
+            if directory is not None and not isinstance(directory, str):
+                raise ConfigError(f"{where}: directory must be a path")
+            if minutes is not None and (isinstance(minutes, bool) or
+                                        not isinstance(minutes, (int, float))
+                                        or minutes <= 0):
+                raise ConfigError(f"{where}: minutes must be a positive number")
+            args = _parse(lambda a: fbs.parse_args(a, env={}),
+                          [*base_argv, *to_argv(opts)], where)
+            if directory is not None:
+                args.directory = directory
+            seconds = None if minutes is None else minutes * 60
+            steps.append(Step(kind, args, seconds,
+                              f"slideshow {minutes if minutes else 'forever'}"
+                              f"{' min' if minutes else ''}"))
+        elif kind == "scene":
+            args = _parse(scene140.parse_args, to_argv(opts), where)
+            seconds = None if args.repeat == 0 else 0
+            steps.append(Step(kind, args, seconds,
+                              f"scene x{args.repeat or 'forever'}"))
+        else:
+            raise ConfigError(f"step {i}: unknown step '{kind}' "
+                              "(slideshow or scene)")
+    for step in steps[:-1]:
+        if step.seconds is None:
+            raise ConfigError(f"'{step.text}' never ends, so the steps after it "
+                              "would never play: give it minutes / repeat, or "
+                              "make it the last step")
+    return Config(loop, steps)
+
+
+def plain(base_argv):
+    """No config file: the slideshow forever, as before."""
+    return Config(True, [Step("slideshow", fbs.parse_args(list(base_argv)),
+                              None, "slideshow forever")])
+
+
+class ConfigFile:
+    """Reads the config file when it changed; keeps the last good version."""
+
+    def __init__(self, path, base_argv, log=fbs.log):
+        self.path, self.base_argv, self.log = path, list(base_argv), log
+        self._stamp = ()  # never a real stamp: the first get() reads/logs
+        self.config = plain(self.base_argv)
+
+    def _current(self):
+        try:
+            st = os.stat(self.path)
+            return st.st_mtime, st.st_size
+        except OSError:
+            return None
+
+    def changed(self):
+        """The file was edited, added or removed since it was last read."""
+        return self._current() != self._stamp
+
+    def get(self):
+        stamp = self._current()
+        if stamp == self._stamp:
+            return self.config
+        self._stamp = stamp
+        if stamp is None:
+            self.log(f"no {self.path}: plain slideshow")
+            self.config = plain(self.base_argv)
+            return self.config
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                self.config = parse_config(f.read(), self.base_argv)
+            self.log(f"{self.path}: " + ", ".join(s.text for s in self.config.steps)
+                     + (" (loop)" if self.config.loop else " (once)"))
+        except (OSError, UnicodeDecodeError, ConfigError) as e:
+            self.log(f"{self.path}: {e} - keeping the previous sequence")
+        return self.config
+
+
+def run(display, config_file, overlay, rng, paused=lambda: False,
+        clock=time.monotonic, sleep=time.sleep, rounds=None, once=False,
+        log=fbs.log):
+    """Plays the steps, round after round (rounds=None: forever, unless the
+    config says loop: false). When the config file changes, the current
+    slideshow step ends after its picture and a new round starts with the
+    new config. once: every picture only once (testing)."""
+    playlists = {}   # (directory, shuffle) -> iterator, continues across steps
+    last = None      # frame on the display
+    for _ in itertools.count() if rounds is None else range(rounds):
+        cfg = config_file.get()
+        for step in cfg.steps:
+            a = step.args
+            if len(cfg.steps) > 1:
+                log(f"step: {step.text}")
+            if step.kind == "scene":
+                display.overlay = None  # no clock over the scene
+                bg = scene140.load_background(a.background, display.size)
+                scene = scene140.Scene(display.size, a.travel, a.pause,
+                                       a.explode, a.seed, background=bg)
+                for _ in itertools.count() if a.repeat == 0 else range(a.repeat):
+                    scene140.play(display, scene, clock=clock, sleep=sleep)
+                    if config_file.changed():
+                        break
+                last = scene.background
+                if config_file.changed():
+                    break
+                continue
+            display.overlay = overlay if a.clock else None
+            key = (a.directory, a.shuffle)
+            if key not in playlists:
+                playlists[key] = fbs.playlist(a.directory, a.shuffle, rng,
+                                              loop=not once)
+            end = None if step.seconds is None else clock() + step.seconds
+
+            def stop(end=end):
+                return (end is not None and clock() >= end) or config_file.changed()
+            last, unused = fbs.slideshow(
+                display, playlists[key], a.hold, a.duration, a.fill,
+                a.transitions, rng, sleep=sleep, clock=clock, paused=paused,
+                easing=fbs.EASINGS[a.easing],
+                refresh=display.refresh if display.overlay else None,
+                stop=stop, start=last)
+            if unused is not None:  # preloaded, not shown: it comes next time
+                playlists[key] = itertools.chain([unused], playlists[key])
+            if config_file.changed():
+                break  # new round with the new config
+        else:
+            if not cfg.loop:
+                return
+            continue
+        if once:
+            return
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--config", default=os.environ.get("CONFIG", DEFAULT_CONFIG))
+    own, base_argv = ap.parse_known_args(argv)
+    if "-h" in base_argv or "--help" in base_argv:
+        print(__doc__)
+        return 0
+    base = fbs.parse_args(base_argv)  # exits with a message if invalid
+    if base.check:
+        if os.path.exists(own.config):
+            try:
+                with open(own.config, encoding="utf-8") as f:
+                    cfg = parse_config(f.read(), base_argv)
+            except (OSError, UnicodeDecodeError, ConfigError) as e:
+                print(f"{own.config}: {e}", file=sys.stderr)
+                return 2
+            print(f"{own.config} ok: " + ", ".join(s.text for s in cfg.steps)
+                  + (" (loop)" if cfg.loop else " (once)"))
+        print("options ok")
+        return 0
+    if base.testcard:
+        return fbs.main(base_argv)
+    opened = fbs.open_display(base)
+    if opened is None:
+        return 2
+    display, overlay = opened
+    paused = fbs.install_signals()
+    rng, seed = fbs.make_rng(base)
+    fbs.log("Sequence " + fbs.describe(base, display, overlay, seed))
+    config_file = ConfigFile(own.config, base_argv)
+    try:
+        run(display, config_file, overlay, rng, paused.is_set,
+            rounds=1 if base.once else None, once=base.once)
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        display.blank()
+        display.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
