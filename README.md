@@ -205,24 +205,38 @@ sequence:
   `- scene`.
 - A step's options apply to that step only; options it does not set come
   from the service (`DEFAULT_ARGS` and `make config`). Display options
-  (`gamma`, `size`, ...) are not set per step.
+  (`gamma`, `limit`, `size`, ...) are not set per step but with `make config`.
 - The pictures continue where the previous slideshow step stopped. There is
   no clock over a scene.
 - The file is checked while the show runs: a change takes effect after the
   current picture (or scene), without a restart. A broken file is logged
   (`make status`) and the last good sequence stays in use.
 
-Set it from itaka; the file is checked on hydra first, a broken one is
-rejected with the reason and nothing changes:
+Usually: put the file on the stick (edit `/mnt/stick/config.yaml`, start
+from `config.example.yaml`) and start the show:
+
+```bash
+make start                              # or make restart if it is running
+make status                             # the log shows the sequence read
+```
+
+`make status` shows `/mnt/stick/config.yaml: scene x3, slideshow 10 min
+(loop)` when the file is fine, or the reason it was rejected (`... - keeping
+the previous sequence`, after a fresh start that is the plain slideshow).
+Check the file by hand on hydra:
+`python3 ~/fb-slideshow/sequence.py --config /mnt/stick/config.yaml --check`.
+Delete the file to go back to the plain slideshow.
+
+Alternatively, from a file on itaka: `make sequence` uploads `config.yaml`
+from the repo directory (it must exist there, `CONFIG=other.yaml` for
+another file), checks it on hydra and only then **replaces**
+`/mnt/stick/config.yaml`; a broken file is rejected with the reason and
+nothing changes.
 
 ```bash
 cp config.example.yaml config.yaml      # edit
-make sequence                           # CONFIG=other.yaml for another file
+make sequence
 ```
-
-Or edit `config.yaml` on the stick directly. Check a file by hand on hydra:
-`python3 ~/fb-slideshow/sequence.py --config FILE --check`. Delete the file
-to go back to the plain slideshow.
 
 ## Pause and exit
 
@@ -271,7 +285,7 @@ used; `make deploy HYDRA=<address>` forces one.
 | `make pause` / `resume` | pause or resume (`SIGUSR1`), the image stays |
 | `make status` | state, boot setting, options, recent log |
 | `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options on top of the service defaults, replacing the previously saved ones (kept across reboots and deploys; `SHOW_ARGS=` goes back to the service defaults). Invalid options are rejected and nothing changes |
-| `make sequence CONFIG=config.yaml` | check the file on hydra and make it the sequence (`/mnt/stick/config.yaml`), see [Sequence](#sequence-configyaml) |
+| `make sequence` | upload the local `config.yaml` (`CONFIG=` another file), check it on hydra and make it the sequence, replacing `/mnt/stick/config.yaml`; see [Sequence](#sequence-configyaml) |
 | `make scene` / `make scene-preview` | play the "140" scene on hydra (the show stays stopped) / render it to a GIF |
 | `make measure-fps` | frame rate of transitions on the real panel (stops the show meanwhile) |
 | `make ci` | test + deploy + test-hydra + restart |
