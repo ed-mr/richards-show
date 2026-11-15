@@ -106,7 +106,7 @@ def test_play_writes_only_the_rows_of_the_small_number(tmp_path):
     n = sc.play(d, scene, clock=Clock(0.05), sleep=lambda s: None)
     assert n > 10
     first = writes[2:5]  # after the initial black and the first full frame
-    assert all(y1 - y0 <= 24 and y0 % 4 == 0 for y0, y1 in first)
+    assert all(y1 - y0 <= 32 and y0 % 4 == 0 for y0, y1 in first)
     assert writes[-1] == (0, H)
     d._m.flush()
     assert fb.read_bytes() == b"\x00" * (W * H * 2)  # ends black
@@ -153,3 +153,49 @@ def test_repeat_0_loops_until_stopped(tmp_path, monkeypatch):
                     "--repeat", "0"]) == 0
     assert len(rounds) == 5
     assert fb.read_bytes() == b"\x00" * (W * H * 2)  # black after Ctrl+C
+
+
+@pytest.fixture(scope="module")
+def picture():
+    rng = np.random.default_rng(5)
+    return rng.integers(0, 256, (H, W, 3), dtype=np.uint8)
+
+
+def test_background_picture_stays_behind_the_number(picture):
+    s = sc.Scene((W, H), seed=1, background=picture)
+    frame, (y0, y1) = s.frame(0)
+    assert np.array_equal(frame[:y0], picture[:y0])
+    assert np.array_equal(frame[y1:], picture[y1:])
+    assert not np.array_equal(frame[y0:y1], picture[y0:y1])  # the tiny 140
+    mid, _ = s.frame(s.travel + 0.1)
+    changed = (mid != picture).any(axis=2)
+    ys, xs = np.nonzero(changed)
+    assert 20 < xs.min() and xs.max() < W - 20  # only around the number (~390 px wide)
+    assert 40 < ys.min() and ys.max() < H - 40
+
+
+def test_background_shows_through_as_the_fragments_fade(picture):
+    s = sc.Scene((W, H), seed=1, background=picture)
+    t = s.travel + s.pause
+    diff = [np.abs(s.frame(t + f * s.explode)[0].astype(int) - picture).mean()
+            for f in (0.1, 0.5, 0.95)]
+    assert diff[0] > diff[1] > diff[2] and diff[2] < 1
+    assert np.array_equal(s.frame(s.total - 1e-9)[0], picture) or diff[2] < 1
+
+
+def test_number_has_a_dark_rim_on_bright_pictures():
+    white = np.full((H, W, 3), 255, np.uint8)
+    s = sc.Scene((W, H), seed=1, background=white)
+    frame, _ = s.frame(0)  # white number on white: only the rim shows it
+    assert frame.min() < 200
+
+
+def test_load_background(tmp_path):
+    pic = tmp_path / "bg.jpg"
+    Image.new("RGB", (1600, 1200), (0, 0, 200)).save(pic)
+    bg = sc.load_background(str(pic), (W, H))
+    assert bg.shape == (H, W, 3) and abs(int(bg[0, 0, 2]) - 200) < 8  # filled
+    assert not sc.load_background(str(tmp_path / "missing.jpg"), (W, H)).any()
+    assert not sc.load_background(None, (W, H)).any()
+    assert sc.parse_args(["--background", "none"]).background is None
+    assert sc.parse_args([]).background == sc.DEFAULT_BACKGROUND
