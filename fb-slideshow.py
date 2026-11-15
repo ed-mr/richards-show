@@ -366,8 +366,12 @@ class Display:
             return
         self._text = text
         y0, y1 = self.overlay.rows
-        rows = self.overlay.apply(self._frame, text)[y0:y1]
-        data = self._encode(rows)
+        self.show_rows(self.overlay.apply(self._frame, text), y0, y1)
+
+    def show_rows(self, frame, y0, y1):
+        """Write only rows y0..y1 of frame; fbtft then sends only those over
+        SPI. Keep y0 a multiple of 4 when dithering (Bayer pattern phase)."""
+        data = self._encode(frame[y0:y1])
         off = y0 * self.info.stride
         self._m[off: off + len(data)] = data
 
