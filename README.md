@@ -178,6 +178,52 @@ whole screen and is limited by SPI).
 The font is in `fonts/` (Ubuntu font family, Ubuntu Font Licence 1.0,
 `fonts/LICENCE.txt`), because hydra does not have it installed.
 
+## Sequence (config.yaml)
+
+What hydra plays is set in `/mnt/stick/config.yaml`: a list of steps,
+slideshow and scenes, played in order and then again from the top. Without
+that file hydra shows the plain slideshow, as before. Example
+(`config.example.yaml`):
+
+```yaml
+loop: true            # after the last step start again (false: play once)
+sequence:
+  - scene:
+      repeat: 3
+      travel: 8
+  - slideshow:
+      minutes: 10     # without minutes: forever (only as the last step)
+      shuffle: true
+      hold: 5
+      transitions: stack
+```
+
+- Steps: `slideshow` (options of `fb-slideshow.py`: `minutes`, `hold`,
+  `shuffle`, `transitions`, `duration`, `easing`, `fill`, `clock`,
+  `directory`) and `scene` (options of `scene140.py`: `repeat`, `travel`,
+  `pause`, `explode`, `background`, `seed`). A step without options:
+  `- scene`.
+- A step's options apply to that step only; options it does not set come
+  from the service (`DEFAULT_ARGS` and `make config`). Display options
+  (`gamma`, `size`, ...) are not set per step.
+- The pictures continue where the previous slideshow step stopped. There is
+  no clock over a scene.
+- The file is checked while the show runs: a change takes effect after the
+  current picture (or scene), without a restart. A broken file is logged
+  (`make status`) and the last good sequence stays in use.
+
+Set it from itaka; the file is checked on hydra first, a broken one is
+rejected with the reason and nothing changes:
+
+```bash
+cp config.example.yaml config.yaml      # edit
+make sequence                           # CONFIG=other.yaml for another file
+```
+
+Or edit `config.yaml` on the stick directly. Check a file by hand on hydra:
+`python3 ~/fb-slideshow/sequence.py --config FILE --check`. Delete the file
+to go back to the plain slideshow.
+
 ## Pause and exit
 
 Pause and resume (toggles on every signal, the current image stays):
@@ -203,8 +249,8 @@ python3 -m pytest -q
 
 ## Deployment and CI
 
-The show runs on hydra as a systemd **user** service (`fb-slideshow.service`)
-and starts at boot (linger is enabled for the user, no `sudo` needed). It is
+The show runs on hydra as a systemd **user** service (`fb-slideshow.service`,
+running `sequence.py`) and starts at boot (linger is enabled for the user, no `sudo` needed). It is
 restarted automatically if it fails, e.g. while `/dev/fb1` is not ready yet
 after boot. Logs go to the journal, which is kept in RAM on hydra.
 
@@ -225,6 +271,7 @@ used; `make deploy HYDRA=<address>` forces one.
 | `make pause` / `resume` | pause or resume (`SIGUSR1`), the image stays |
 | `make status` | state, boot setting, options, recent log |
 | `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options on top of the service defaults, replacing the previously saved ones (kept across reboots and deploys; `SHOW_ARGS=` goes back to the service defaults). Invalid options are rejected and nothing changes |
+| `make sequence CONFIG=config.yaml` | check the file on hydra and make it the sequence (`/mnt/stick/config.yaml`), see [Sequence](#sequence-configyaml) |
 | `make scene` / `make scene-preview` | play the "140" scene on hydra (the show stays stopped) / render it to a GIF |
 | `make measure-fps` | frame rate of transitions on the real panel (stops the show meanwhile) |
 | `make ci` | test + deploy + test-hydra + restart |

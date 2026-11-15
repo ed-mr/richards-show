@@ -5,6 +5,8 @@
 #
 #   show.sh install                 install/update and enable the service
 #   show.sh start|stop|restart|pause|resume|status
+#   show.sh sequence <file>         check <file>, then make it the sequence
+#                                   (/mnt/stick/config.yaml)
 #   show.sh config "<options>"      set options for fb-slideshow.py, on top
 #                                   of the service's DEFAULT_ARGS (empty =
 #                                   defaults only), restarts if running
@@ -17,6 +19,7 @@ UNIT=fb-slideshow.service
 UNIT_DIR=$HOME/.config/systemd/user
 CONF_DIR=$HOME/.config/fb-slideshow
 CONF=$CONF_DIR/env
+SEQUENCE=/mnt/stick/config.yaml
 
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 sc() { systemctl --user "$@"; }
@@ -70,7 +73,7 @@ configure() {
     # check first: a bad option would make the service fail on every restart
     # (checked together with the defaults, as the service will start it)
     # shellcheck disable=SC2086  # options are meant to be split
-    if ! out=$(PYTHONDONTWRITEBYTECODE=1 python3 "$DIR/fb-slideshow.py" \
+    if ! out=$(PYTHONDONTWRITEBYTECODE=1 python3 "$DIR/sequence.py" \
             $(default_args) $1 --check 2>&1); then
         echo "invalid options, nothing changed:" >&2
         printf '%s\n' "$out" | grep -E 'error:' >&2 || printf '%s\n' "$out" >&2
@@ -84,6 +87,25 @@ configure() {
     echo "defaults: $(default_args)"
     echo "options:  ${1:-(none, defaults only)}"
     if active; then sc restart "$UNIT"; echo "restarted"; fi
+}
+
+sequence_config() {  # $1 = uploaded file; checked, then made the config
+    if ! out=$(PYTHONDONTWRITEBYTECODE=1 python3 "$DIR/sequence.py" \
+            --config "$1" $(default_args) $(sed -n 's/^SHOW_ARGS=//p' "$CONF" 2>/dev/null) \
+            --check 2>&1); then
+        echo "invalid sequence, nothing changed:" >&2
+        printf '%s\n' "$out" >&2
+        rm -f "$1"
+        return 1
+    fi
+    if cmp -s "$1" "$SEQUENCE"; then
+        rm -f "$1"
+        echo "sequence unchanged"
+    else
+        mv "$1" "$SEQUENCE"
+        echo "sequence saved to $SEQUENCE (the show picks it up)"
+    fi
+    printf '%s\n' "$out" | head -n 1 | sed 's/^[^ ]* ok:/sequence ok:/'
 }
 
 signal_pause() {  # $1 = wanted state: pause | resume
@@ -132,6 +154,7 @@ case "${1:-}" in
     resume) signal_pause resume ;;
     status) status ;;
     config) configure "${2:-}" ;;
-    *) echo "usage: $0 install|start|stop|restart|pause|resume|status|config [options]" >&2
+    sequence) sequence_config "$2" ;;
+    *) echo "usage: $0 install|start|stop|restart|pause|resume|status|config [options]|sequence <file>" >&2
        exit 2 ;;
 esac

@@ -12,6 +12,9 @@
 #                      set the show's options, on top of DEFAULT_ARGS in
 #                      ci/fb-slideshow.service (kept across reboots and
 #                      deploys); SHOW_ARGS= goes back to the defaults
+#   make sequence CONFIG=config.yaml
+#                      check the file on hydra and make it the sequence
+#                      (/mnt/stick/config.yaml); the show picks it up
 #   make scene         stop the show and play the "140" scene on hydra
 #                      (SCENE_ARGS="--repeat 3", "--repeat 0" loops until
 #                      Ctrl+C); the show stays stopped,
@@ -46,11 +49,11 @@ find_hydra = $(or $(shell for h in $(HYDRA_CANDIDATES); do \
 	done),$(error hydra not reachable via any of: $(HYDRA_CANDIDATES)))
 
 DEPLOY_FILES := fb-slideshow.py test_fb_slideshow.py requirements.txt \
-	scene140.py test_scene140.py
+	scene140.py test_scene140.py sequence.py test_sequence.py config.example.yaml
 SCENE_ARGS ?=
 VERSIONS := import sys, numpy, PIL; print(sys.version.split()[0], numpy.__version__, PIL.__version__)
 
-.PHONY: test deploy test-hydra start stop restart pause resume status config measure-fps scene scene-preview ci clean hydra-host
+.PHONY: test deploy test-hydra start stop restart pause resume status config sequence measure-fps scene scene-preview ci clean hydra-host
 
 $(VENV)/.stamp: requirements-ci.txt
 	$(UV) venv -q --clear --python $(PYTHON_VERSION) $(VENV)
@@ -85,6 +88,12 @@ start stop restart pause resume status:
 
 config:
 	@$(SSH) $(HYDRA) "$(DEPLOY_DIR)/ci/show.sh config '$(SHOW_ARGS)'"
+
+CONFIG ?= config.yaml
+sequence:
+	@test -f "$(CONFIG)" || { echo "no $(CONFIG) (start from config.example.yaml)" >&2; exit 1; }
+	@$(SCP) "$(CONFIG)" $(HYDRA):/mnt/stick/config.yaml.new
+	@$(SSH) $(HYDRA) '$(DEPLOY_DIR)/ci/show.sh sequence /mnt/stick/config.yaml.new'
 
 # frame rate of transitions on the real panel (stops the show meanwhile)
 measure-fps:
