@@ -12,6 +12,11 @@
 #                      set the show's options, on top of DEFAULT_ARGS in
 #                      ci/fb-slideshow.service (kept across reboots and
 #                      deploys); SHOW_ARGS= goes back to the defaults
+#   make scene         stop the show and play the "140" scene on hydra
+#                      (SCENE_ARGS="--repeat 3", "--repeat 0" loops until
+#                      Ctrl+C); the show stays stopped,
+#                      "make start" brings it back
+#   make scene-preview render the scene to scene140.gif on this machine
 #   make ci            test + deploy + test-hydra + restart (what CI runs)
 #   make hydra-host    show which address of hydra is used
 #
@@ -40,10 +45,12 @@ find_hydra = $(or $(shell for h in $(HYDRA_CANDIDATES); do \
 	ssh -o BatchMode=yes -o ConnectTimeout=4 "$$h" true 2>/dev/null && { echo "$$h"; break; }; \
 	done),$(error hydra not reachable via any of: $(HYDRA_CANDIDATES)))
 
-DEPLOY_FILES := fb-slideshow.py test_fb_slideshow.py requirements.txt
+DEPLOY_FILES := fb-slideshow.py test_fb_slideshow.py requirements.txt \
+	scene140.py test_scene140.py
+SCENE_ARGS ?=
 VERSIONS := import sys, numpy, PIL; print(sys.version.split()[0], numpy.__version__, PIL.__version__)
 
-.PHONY: test deploy test-hydra start stop restart pause resume status config measure-fps ci clean hydra-host
+.PHONY: test deploy test-hydra start stop restart pause resume status config measure-fps scene scene-preview ci clean hydra-host
 
 $(VENV)/.stamp: requirements-ci.txt
 	$(UV) venv -q --clear --python $(PYTHON_VERSION) $(VENV)
@@ -54,8 +61,12 @@ test: $(VENV)/.stamp
 	$(VENV)/bin/python -m pytest -q -p no:cacheprovider
 
 deploy:
-	$(SSH) $(HYDRA) 'mkdir -p $(DEPLOY_DIR)/ci'
+	$(SSH) $(HYDRA) 'mkdir -p $(DEPLOY_DIR)/ci $(DEPLOY_DIR)/fonts'
 	$(SCP) $(DEPLOY_FILES) $(HYDRA):$(DEPLOY_DIR)/
+	@# the font (1 MB) only when it changed, keeps SD-card writes down
+	@$(SSH) $(HYDRA) 'md5sum $(DEPLOY_DIR)/fonts/Ubuntu.ttf 2>/dev/null' | \
+		sed 's| .*||' | grep -qx "$$(md5sum fonts/Ubuntu.ttf | sed 's| .*||')" || \
+		$(SCP) fonts/Ubuntu.ttf fonts/LICENCE.txt $(HYDRA):$(DEPLOY_DIR)/fonts/
 	$(SCP) ci/show.sh ci/fb-slideshow.service ci/measure_fps.py $(HYDRA):$(DEPLOY_DIR)/ci/
 	$(SSH) $(HYDRA) 'chmod +x $(DEPLOY_DIR)/ci/show.sh && $(DEPLOY_DIR)/ci/show.sh install'
 	@echo "deployed to $(HYDRA):$(DEPLOY_DIR)"
@@ -81,6 +92,16 @@ measure-fps:
 	$(SSH) $(HYDRA) '$(DEPLOY_DIR)/ci/show.sh stop'
 	-$(SSH) $(HYDRA) 'PYTHONDONTWRITEBYTECODE=1 python3 $(DEPLOY_DIR)/ci/measure_fps.py --transitions stack,cut,fade'
 	$(SSH) $(HYDRA) '$(DEPLOY_DIR)/ci/show.sh start'
+
+# the "140" scene (issue #11); the show stays stopped afterwards
+scene:
+	$(SSH) $(HYDRA) '$(DEPLOY_DIR)/ci/show.sh stop'
+	@# -t: Ctrl+C reaches the scene on hydra
+	-$(SSH) -t $(HYDRA) 'PYTHONDONTWRITEBYTECODE=1 python3 $(DEPLOY_DIR)/scene140.py $(SCENE_ARGS)'
+	@echo "show stopped; bring it back with: make start"
+
+scene-preview: $(VENV)/.stamp
+	$(VENV)/bin/python scene140.py --preview scene140.gif $(SCENE_ARGS)
 
 ci: test deploy test-hydra restart
 

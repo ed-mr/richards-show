@@ -136,6 +136,41 @@ At each new minute only the clock's rows are rewritten, so the SPI bus sends
 about a quarter of a frame. Switch it off with `--no-clock`, e.g.
 `make config SHOW_ARGS="--no-clock"`.
 
+## Scene "140"
+
+A standalone scene (`scene140.py`, issue #11), not part of the slideshow
+yet. A tiny "140" (5 pt, Ubuntu Bold) appears at the clock's height, its
+left edge at a third of the width. It rises in an arc (up first, then right)
+into the middle, growing until its digits are half the screen high, its color
+warming from white over yellow and orange to red. In the middle it bursts
+into fragments that fly over the whole screen and fade out. Black background,
+about 10 s.
+
+```bash
+make scene                          # stops the show, plays the scene on hydra
+make scene SCENE_ARGS="--repeat 3 --travel 8"
+make scene SCENE_ARGS="--repeat 0"  # loop until Ctrl+C
+make start                          # the show again
+make scene-preview                  # scene140.gif on itaka, to look at on a PC
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--travel S` | 6 | seconds for the arc into the middle |
+| `--pause S` | 0.6 | seconds in the middle before the burst |
+| `--explode S` | 3 | seconds for the burst |
+| `--repeat N` | 1 | times to play; `0` = loop until stopped (Ctrl+C) |
+| `--seed N` | random | fragments of the burst |
+| `--preview GIF`, `--fps N` | – | render to an animated GIF instead of the display |
+
+While the number is small only its rows are written, so the panel gets far
+more frames than the 6 full frames/s SPI allows. Measured on hydra: ~24
+frames/s while small, ~19 while large, ~8 during the burst (which redraws the
+whole screen and is limited by SPI).
+
+The font is in `fonts/` (Ubuntu font family, Ubuntu Font Licence 1.0,
+`fonts/LICENCE.txt`), because hydra does not have it installed.
+
 ## Pause and exit
 
 Pause and resume (toggles on every signal, the current image stays):
@@ -183,6 +218,7 @@ used; `make deploy HYDRA=<address>` forces one.
 | `make pause` / `resume` | pause or resume (`SIGUSR1`), the image stays |
 | `make status` | state, boot setting, options, recent log |
 | `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options on top of the service defaults, replacing the previously saved ones (kept across reboots and deploys; `SHOW_ARGS=` goes back to the service defaults). Invalid options are rejected and nothing changes |
+| `make scene` / `make scene-preview` | play the "140" scene on hydra (the show stays stopped) / render it to a GIF |
 | `make measure-fps` | frame rate of transitions on the real panel (stops the show meanwhile) |
 | `make ci` | test + deploy + test-hydra + restart |
 | `make hydra-host` | which address of hydra is used |
