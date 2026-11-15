@@ -143,8 +143,13 @@ yet. A tiny "140" (5 pt, Ubuntu Bold) appears at the clock's height, its
 left edge at a third of the width. It rises in an arc (up first, then right)
 into the middle, growing until its digits are half the screen high, its color
 warming from white over yellow and orange to red. In the middle it bursts
-into fragments that fly over the whole screen and fade out. Black background,
-about 10 s.
+into fragments that fly over the whole screen and fade out, so the picture
+behind shows through again. About 10 s.
+
+Background: the picture `/mnt/stick/background/scene-background.jpg`
+(fills the screen, cropped), black if it is missing. A soft dark rim keeps
+the number readable on bright pictures. Another picture:
+`--background FILE`, black: `--background none`.
 
 ```bash
 make scene                          # stops the show, plays the scene on hydra
@@ -152,6 +157,7 @@ make scene SCENE_ARGS="--repeat 3 --travel 8"
 make scene SCENE_ARGS="--repeat 0"  # loop until Ctrl+C
 make start                          # the show again
 make scene-preview                  # scene140.gif on itaka, to look at on a PC
+make scene-preview SCENE_ARGS="--background background/scene-background.jpg"
 ```
 
 | Option | Default | Meaning |
@@ -161,6 +167,7 @@ make scene-preview                  # scene140.gif on itaka, to look at on a PC
 | `--explode S` | 3 | seconds for the burst |
 | `--repeat N` | 1 | times to play; `0` = loop until stopped (Ctrl+C) |
 | `--seed N` | random | fragments of the burst |
+| `--background FILE` | `/mnt/stick/background/scene-background.jpg` | picture behind the scene; `none` = black; black if missing (env `SCENE_BACKGROUND`) |
 | `--preview GIF`, `--fps N` | – | render to an animated GIF instead of the display |
 
 While the number is small only its rows are written, so the panel gets far

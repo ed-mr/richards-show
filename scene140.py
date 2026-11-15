@@ -8,6 +8,9 @@ middle, growing until its digits are half the screen high, its color warming
 from white over yellow and orange to red. In the middle it bursts into
 fragments that fly over the whole screen and fade out.
 
+Behind it: the picture /mnt/stick/background/scene-background.jpg (black if
+missing; --background FILE or none).
+
     python3 scene140.py                     # play once on /dev/fb1
     python3 scene140.py --repeat 3
     python3 scene140.py --repeat 0          # loop until stopped (Ctrl+C)
@@ -40,6 +43,7 @@ _spec.loader.exec_module(fbs)
 
 START_PT = 5.0      # font size at the start
 END_HEIGHT = 0.5    # digit height in the middle, as part of the screen height
+DEFAULT_BACKGROUND = "/mnt/stick/background/scene-background.jpg"
 FRAGMENT = 6        # fragment size in px (at the number's full size)
 
 # warm color ramp over the journey: (position 0..1, RGB)
@@ -88,9 +92,11 @@ def render_master(height, font=FONT, text=TEXT):
     return np.asarray(img.crop(img.getbbox()), np.float32) / 255  # ink only
 
 
-def blit(canvas, alpha, color, x, y):
-    """Draw an alpha mask in a color at (x, y) (top left, may be partly off
-    screen), lighten-only. Returns the rows touched (y0, y1) or None."""
+def blit(canvas, alpha, color, x, y, rim=None, shadow=0.5):
+    """Blend an alpha mask in a color over the canvas at (x, y) (top left,
+    may be partly off screen). rim: optional mask of the same size that
+    darkens the picture around the ink (readability on bright pictures).
+    Returns the rows touched (y0, y1) or None."""
     h, w = alpha.shape
     H, W, _ = canvas.shape
     cx0, cy0 = max(0, x), max(0, y)
@@ -98,16 +104,32 @@ def blit(canvas, alpha, color, x, y):
     if cx0 >= cx1 or cy0 >= cy1:
         return None
     a = alpha[cy0 - y:cy1 - y, cx0 - x:cx1 - x, None]
-    col = np.asarray(color, np.float32)
-    region = canvas[cy0:cy1, cx0:cx1]
-    np.maximum(region, (a * col).astype(np.uint8), out=region)
+    region = canvas[cy0:cy1, cx0:cx1].astype(np.float32)
+    if rim is not None:
+        region *= 1 - shadow * rim[cy0 - y:cy1 - y, cx0 - x:cx1 - x, None]
+    region += (np.asarray(color, np.float32) - region) * a
+    canvas[cy0:cy1, cx0:cx1] = np.rint(region).astype(np.uint8)
     return cy0, cy1
+
+
+def load_background(path, size):
+    """The picture behind the scene, filling the screen (cropped), or black
+    when path is None or not readable."""
+    w, h = size
+    if path:
+        try:
+            return fbs.load_image(path, size, fill=True)
+        except (OSError, ValueError) as e:
+            fbs.log(f"no background ({e}), using black")
+    return np.zeros((h, w, 3), np.uint8)
 
 
 class Scene:
     def __init__(self, size, travel=6.0, pause=0.6, explode=3.0, seed=None,
-                 diagonal_in=fbs.DISPLAY_DIAGONAL_IN, font=FONT):
+                 diagonal_in=fbs.DISPLAY_DIAGONAL_IN, font=FONT, background=None):
         self.size = W, H = size
+        self.background = (np.zeros((H, W, 3), np.uint8) if background is None
+                           else background)
         self.travel, self.pause, self.explode = travel, pause, explode
         self.total = travel + pause + explode
         px_cm = math.hypot(W, H) / (diagonal_in * 2.54)
@@ -125,6 +147,7 @@ class Scene:
         self.p1 = np.array([self.p0[0], self.p2[1]])  # up first, then right
         self._fragments(random.Random(seed))
         self._cache = {}
+        self._big = self._padded_master()
 
     # ---------------------------------------------------------------- journey
     def position(self, q):
@@ -136,13 +159,31 @@ class Scene:
         """Digit height: grows geometrically (evenly to the eye)."""
         return self.start_h * (self.end_h / self.start_h) ** q
 
+    def _padded_master(self):
+        """Full-size number and its soft dark rim, padded; computed once and
+        scaled down per frame (the rim scales with the number)."""
+        from PIL import ImageFilter
+        r = max(1, round(self.end_h * 0.06))
+        mh, mw = self.master.shape
+        padded = Image.new("L", (mw + 4 * r, mh + 4 * r), 0)
+        padded.paste(Image.fromarray((self.master * 255).astype(np.uint8)),
+                     (2 * r, 2 * r))
+        rim = padded.filter(ImageFilter.MaxFilter(2 * r + 1)).filter(
+            ImageFilter.GaussianBlur(r / 2 + 0.5))
+        return padded, rim
+
     def number(self, h):
+        """(alpha, rim) of the number with digits h px high; both padded so
+        the soft dark rim around the ink fits."""
         h = max(2, round(h))
         if h not in self._cache:
-            w = max(2, round(h * self.aspect))
-            img = Image.fromarray((self.master * 255).astype(np.uint8))
-            self._cache = {h: np.asarray(img.resize((w, h), Image.LANCZOS),
-                                         np.float32) / 255}
+            padded, rim = self._big
+            f = h / self.master.shape[0]
+            size = (max(2, round(padded.width * f)), max(2, round(padded.height * f)))
+            self._cache = {h: (np.asarray(padded.resize(size, Image.LANCZOS),
+                                          np.float32) / 255,
+                               np.asarray(rim.resize(size, Image.BILINEAR),
+                                          np.float32) / 255)}
         return self._cache[h]
 
     # -------------------------------------------------------------- explosion
@@ -181,16 +222,17 @@ class Scene:
 
     # ----------------------------------------------------------------- frames
     def frame(self, t):
-        """(RGB frame, rows (y0, y1) that differ from black or None = all)."""
+        """(RGB frame, rows (y0, y1) that differ from the background, or
+        None = all)."""
         W, H = self.size
-        canvas = np.zeros((H, W, 3), np.uint8)
+        canvas = self.background.copy()
         if t < self.travel + self.pause:
             q = ease_in_out(min(t / self.travel, 1.0)) if self.travel else 1.0
-            alpha = self.number(self.height(q))
+            alpha, rim = self.number(self.height(q))
             h, w = alpha.shape
             cx, cy = self.position(q)
             rows = blit(canvas, alpha, ramp_color(q),
-                        round(cx - w / 2), round(cy - h / 2))
+                        round(cx - w / 2), round(cy - h / 2), rim)
             return canvas, rows
         p = min((t - self.travel - self.pause) / self.explode, 1.0)
         fade = (1 - p) ** 1.4
@@ -207,11 +249,14 @@ class Scene:
         r = np.arange(k)
         xx = np.broadcast_to(top_left[:, 0, None, None] + r[None, None, :], a.shape)
         yy = np.broadcast_to(top_left[:, 1, None, None] + r[None, :, None], a.shape)
-        col = np.minimum((red * (1 - g) + glow * g) * fade
+        col = np.minimum((red * (1 - g) + glow * g)
                          * self.frag_bright[:, None], 255)
-        vals = a[..., None] * col[:, None, None, :]
         m = (a > 0.02) & (xx >= 0) & (xx < W) & (yy >= 0) & (yy < H)
-        canvas[yy[m], xx[m]] = vals[m].astype(np.uint8)
+        # pieces fade out: their opacity goes to 0, the picture shows through
+        op = (a * fade)[m][:, None]
+        cols = np.broadcast_to(col[:, None, None, :], a.shape + (3,))[m]
+        under = self.background[yy[m], xx[m]].astype(np.float32)
+        canvas[yy[m], xx[m]] = np.rint(under + (cols - under) * op).astype(np.uint8)
         return canvas, None
 
 
@@ -224,8 +269,7 @@ def play(display, scene, clock=time.monotonic, sleep=time.sleep, max_fps=25):
     """Time-driven like the transitions: slow frames are skipped, the scene
     keeps its duration. Returns the number of frames written."""
     W, H = scene.size
-    black = np.zeros((H, W, 3), np.uint8)
-    display.show(black)
+    display.show(scene.background)
     prev = None
     frames = 0
     t0 = clock()
@@ -245,7 +289,7 @@ def play(display, scene, clock=time.monotonic, sleep=time.sleep, max_fps=25):
         left = 1 / max_fps - (clock() - start)
         if left > 0:
             sleep(left)
-    display.show(black)
+    display.show(scene.background)
     return frames
 
 
@@ -253,7 +297,7 @@ def preview(scene, path, fps=12):
     """Render the scene into an animated GIF (for looking at it on a PC)."""
     n = max(1, round(scene.total * fps))
     imgs = [Image.fromarray(scene.frame(i / fps)[0]) for i in range(n)]
-    imgs.append(Image.fromarray(np.zeros_like(scene.frame(0)[0])))
+    imgs.append(Image.fromarray(scene.background))
     imgs[0].save(path, save_all=True, append_images=imgs[1:],
                  duration=round(1000 / fps), loop=0)
     return len(imgs)
@@ -271,12 +315,18 @@ def parse_args(argv):
     ap.add_argument("--repeat", type=int, default=1,
                     help="times to play; 0 = loop until stopped")
     ap.add_argument("--seed", type=int, help="random seed of the fragments")
+    ap.add_argument("--background", default=os.environ.get("SCENE_BACKGROUND",
+                                                            DEFAULT_BACKGROUND),
+                    help="picture behind the scene, fills the screen; 'none' = "
+                         "black (default: %s, black if missing)" % DEFAULT_BACKGROUND)
     ap.add_argument("--size", type=fbs.parse_size, help="override, e.g. 480x320")
     ap.add_argument("--invert", choices=["auto", "on", "off"], default="auto")
     ap.add_argument("--preview", metavar="GIF",
                     help="render to an animated GIF instead of the display")
     ap.add_argument("--fps", type=float, default=12, help="frame rate of --preview")
     a = ap.parse_args(argv)
+    if a.background.lower() in ("", "none", "black"):
+        a.background = None
     if min(a.travel, a.explode) <= 0 or a.pause < 0 or a.repeat < 0 or a.fps <= 0:
         ap.error("durations and --fps must be positive, --repeat not negative")
     return a
@@ -285,7 +335,9 @@ def parse_args(argv):
 def main(argv=None):
     a = parse_args(sys.argv[1:] if argv is None else argv)
     if a.preview:
-        scene = Scene(a.size or (480, 320), a.travel, a.pause, a.explode, a.seed)
+        size = a.size or (480, 320)
+        scene = Scene(size, a.travel, a.pause, a.explode, a.seed,
+                      background=load_background(a.background, size))
         n = preview(scene, a.preview, a.fps)
         print(f"{a.preview}: {n} frames, {scene.total:.1f} s")
         return 0
@@ -301,7 +353,9 @@ def main(argv=None):
     display = fbs.Display(a.fb, info, invert)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))  # ssh closed
-    scene = Scene((info.width, info.height), a.travel, a.pause, a.explode, a.seed)
+    size = (info.width, info.height)
+    scene = Scene(size, a.travel, a.pause, a.explode, a.seed,
+                  background=load_background(a.background, size))
     try:
         for _ in itertools.count() if a.repeat == 0 else range(a.repeat):
             t0 = time.monotonic()
