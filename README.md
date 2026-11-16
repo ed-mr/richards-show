@@ -242,9 +242,12 @@ make start                              # or make restart if it is running
 make status                             # the log shows the sequence read
 ```
 
-`make status` shows `/mnt/stick/config.yaml: scene x3, scene x1 -3s, slideshow 10 min
-(loop)` when the file is fine, or the reason it was rejected (`... - keeping
-the previous sequence`, after a fresh start that is the plain slideshow).
+`make start` / `make restart` print what the show made of the file, e.g.
+`sequence: /mnt/stick/config.yaml: scene x3, scene x1 -3s, slideshow 10 min
+(loop)`, or the reason it was rejected: `... - NOT USED, plain slideshow`
+(the command then fails). `make status` shows it in the log as well; a
+broken file saved while the show runs is logged with `- keeping the previous
+sequence`.
 Check the file by hand on hydra:
 `python3 ~/fb-slideshow/sequence.py --config /mnt/stick/config.yaml --check`.
 Delete the file to go back to the plain slideshow.
@@ -303,7 +306,7 @@ used; `make deploy HYDRA=<address>` forces one.
 | `make test` | tests on itaka, with hydra's Python / numpy / Pillow versions (`requirements-ci.txt`) |
 | `make deploy` | copy to `hydra:~/fb-slideshow` and install/update the service |
 | `make test-hydra` | tests on hydra, version check, verify the service file |
-| `make start` / `stop` / `restart` | control the service |
+| `make start` / `stop` / `restart` | control the service; start and restart also print what the show made of `/mnt/stick/config.yaml` (the sequence, or why the file is NOT USED, then the command fails) |
 | `make pause` / `resume` | pause or resume (`SIGUSR1`), the image stays |
 | `make status` | state, boot setting, options, recent log |
 | `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options on top of the service defaults, replacing the previously saved ones (kept across reboots and deploys; `SHOW_ARGS=` goes back to the service defaults). Invalid options are rejected and nothing changes |

@@ -197,6 +197,7 @@ class ConfigFile:
         self.path, self.base_argv, self.log = path, list(base_argv), log
         self._stamp = ()  # never a real stamp: the first get() reads/logs
         self.config = plain(self.base_argv)
+        self.good = False  # a config from the file was read successfully
 
     def _current(self):
         try:
@@ -217,14 +218,18 @@ class ConfigFile:
         if stamp is None:
             self.log(f"no {self.path}: plain slideshow")
             self.config = plain(self.base_argv)
+            self.good = False
             return self.config
         try:
             with open(self.path, encoding="utf-8") as f:
                 self.config = parse_config(f.read(), self.base_argv)
             self.log(f"{self.path}: " + ", ".join(s.text for s in self.config.steps)
                      + (" (loop)" if self.config.loop else " (once)"))
+            self.good = True
         except (OSError, UnicodeDecodeError, ConfigError) as e:
-            self.log(f"{self.path}: {e} - keeping the previous sequence")
+            self.log(f"{self.path}: {e} - " + ("keeping the previous sequence"
+                                              if self.good else
+                                              "NOT USED, plain slideshow"))
         return self.config
 
 

@@ -110,6 +110,16 @@ def test_config_file_reload_and_keeping_the_last_good_one(tmp_path):
     assert [s.text for s in cf.get().steps] == ["slideshow forever"]
 
 
+def test_a_broken_file_at_the_start_says_plain_slideshow(tmp_path):
+    f = tmp_path / "config.yaml"
+    f.write_text("sequence:\n  - scene: {starting: -6}\n")
+    logs = []
+    cf = seq.ConfigFile(str(f), [], log=logs.append)
+    assert [s.text for s in cf.get().steps] == ["slideshow forever"]
+    assert "--starting" in logs[-1] and "NOT USED, plain slideshow" in logs[-1]
+    assert "keeping" not in logs[-1]
+
+
 # ------------------------------------------------------------ running
 class FakeDisplay:
     size = (W, H)
