@@ -109,21 +109,21 @@ sequence_config() {  # $1 = uploaded file; checked, then made the config
 }
 
 report_sequence() {
-    # after a (re)start: what the show made of the config file; the line is
-    # logged ~2 s after the start (python + numpy load slowly on the Pi)
+    # after a (re)start: an error if the show rejected the config file
+    # (silent when it is fine); the line is logged ~2 s after the start
+    # (python + numpy load slowly on the Pi)
     for _ in $(seq 1 40); do
         line=$(log_lines | grep -m 1 -E '(^no |^/).*\.ya?ml' || true)
         if [ -n "$line" ]; then
             case "$line" in
-                *"NOT USED"*) echo "sequence: $line" >&2; return 1 ;;
-                *) echo "sequence: $line" ;;
+                *"NOT USED"*) echo "error: $line" >&2; return 1 ;;
             esac
             return 0
         fi
         active || { echo "the show did not start (make status)" >&2; return 1; }
         sleep 0.5
     done
-    echo "sequence: not reported yet (make status)" >&2
+    echo "config file not read yet (make status)" >&2
 }
 
 signal_pause() {  # $1 = wanted state: pause | resume
