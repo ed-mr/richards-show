@@ -705,7 +705,8 @@ def run_transition(display, fn, a, b, duration, clock=time.monotonic,
 # peeks out below it, slightly turned; the top one is drawn away and the
 # next one straightens up into its place while a new one shows up below.
 # --------------------------------------------------------------------------
-PILE_SCALE = 0.88            # box of the top print, part of the screen
+PILE_SCALE = 1.0             # box of the top print, part of the screen
+PILE_BORDER = 0.01           # white border, part of the screen height
 PILE_TABLE = (20, 20, 22)
 PILE_BORDER_COLOR = (236, 234, 228)
 PILE_ANGLE = (1.5, 4.0)      # degrees, turn of the print below
@@ -735,7 +736,7 @@ def load_card(path, size, fill=False):
     aspect; --fill: cropped to the box)."""
     from PIL import ImageFilter
     w, h = size
-    border = max(3, round(min(w, h) * 0.015))
+    border = max(2, round(min(w, h) * PILE_BORDER))
     box = (round(w * PILE_SCALE) - 2 * border, round(h * PILE_SCALE) - 2 * border)
     with Image.open(path) as im:
         im.draft("RGB", (max(box), max(box)))

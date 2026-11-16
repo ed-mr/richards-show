@@ -108,17 +108,18 @@ To repeat a run exactly, take the seed from the start line in the log
 ### Photo pile
 
 With `--transitions stack` alone (as on hydra) the pictures lie as a pile of
-prints with a white border on a dark table (issue #20). The top print lies
-straight in the middle, 88 % of the screen; the next one already lies below
-it, slightly turned (1.5–4°) and shifted, so its edges peek out. The top
-print is drawn away (as `stack`: left, right, up or down, with drift and a
-shadow), the one below straightens up into its place and the one after it
-appears below. Portrait pictures are narrower prints (`--fill`: all prints
+prints on a dark table (issue #20). Each picture keeps its full size, with a
+thin white border (1 % of the screen height, 3 px); the next one lies below
+it, slightly turned (1.5–4°) and shifted. It shows while the top print is
+drawn away (as `stack`: left, right, up or down, with drift and a shadow)
+and straightens up into its place, while the one after it appears below.
+At rest it peeks out only beside pictures that are narrower or wider than
+the screen (where there were black bars before; `--fill`: all pictures
 have the screen's shape).
 
 `--no-pile` switches it off (full-screen pictures, plain `stack`), `--pile`
 switches it on with other transitions too; in a sequence step: `pile: false`.
-Fixed in the code: `PILE_SCALE`, `PILE_ANGLE`, `PILE_SHIFT`, `PILE_TABLE`,
+Fixed in the code: `PILE_SCALE` (1.0 = full size), `PILE_BORDER`, `PILE_ANGLE`, `PILE_SHIFT`, `PILE_TABLE`,
 `PILE_BORDER_COLOR`, `PILE_SHADOW`. Two pictures are loaded ahead (the one
 below and the one after it), so no transition waits for loading. On hydra a
 pile transition is as fast as the plain `stack` (~310 ms per frame, measured
