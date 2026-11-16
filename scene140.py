@@ -15,6 +15,14 @@ missing; --background FILE or none).
     python3 scene140.py --repeat 3
     python3 scene140.py --repeat 0          # loop until stopped (Ctrl+C)
     python3 scene140.py --preview 140.gif   # render to a GIF instead (no display)
+    python3 scene140.py --color 30,180,10 --starting 70,10
+
+Variable (issue #17): --color is the final color (white blends into it on the
+way, default the red), --starting the start as percent of the screen (left
+edge of the number from the left, its bottom from the bottom; default 33,4).
+--timing is used by sequence.py: when scenes follow each other, a scene starts
+that many seconds after the end of the previous one (negative: they overlap,
+over one background).
 
 While the number is small only the rows it covers are written, so fbtft
 sends less over SPI and the frame rate is higher.
@@ -54,13 +62,23 @@ RAMP = [(0.0, (255, 255, 255)), (0.35, (255, 236, 170)),
         (0.7, (255, 150, 50)), (1.0, (225, 25, 15))]
 
 
-def ramp_color(q):
+GLOW = (255, 120, 30)  # flash at the burst with the default color
+
+
+def make_ramp(color=None):
+    """The color ramp ending in `color` (None: the default warm ramp)."""
+    if color is None:
+        return RAMP
+    return [(0.0, (255, 255, 255)), (1.0, tuple(color))]
+
+
+def ramp_color(q, ramp=RAMP):
     q = min(max(q, 0.0), 1.0)
-    for (q0, c0), (q1, c1) in zip(RAMP, RAMP[1:]):
+    for (q0, c0), (q1, c1) in zip(ramp, ramp[1:]):
         if q <= q1:
             f = (q - q0) / (q1 - q0)
             return tuple(a + (b - a) * f for a, b in zip(c0, c1))
-    return RAMP[-1][1]
+    return ramp[-1][1]
 
 
 def ease_in_out(p):
@@ -129,8 +147,15 @@ def load_background(path, size):
 
 class Scene:
     def __init__(self, size, travel=6.0, pause=0.6, explode=3.0, seed=None,
-                 diagonal_in=fbs.DISPLAY_DIAGONAL_IN, font=FONT, background=None):
+                 diagonal_in=fbs.DISPLAY_DIAGONAL_IN, font=FONT, background=None,
+                 color=None, start=None):
+        """color: final RGB (None: the warm ramp to red). start: (x, y) in
+        percent of the screen, left edge of the number from the left and its
+        bottom from the bottom (None: a third of the width, clock height)."""
         self.size = W, H = size
+        self.ramp = make_ramp(color)
+        self.glow = (np.array(GLOW, np.float32) if color is None else
+                     np.array(color, np.float32) * 0.5 + 127.5)
         self.background = (np.zeros((H, W, 3), np.uint8) if background is None
                            else background)
         self.travel, self.pause, self.explode = travel, pause, explode
@@ -142,10 +167,12 @@ class Scene:
         # 5 pt font size -> digit height (digits are ~0.7 em in Ubuntu)
         em = START_PT / 72 * 2.54 * px_cm
         self.start_h = em * digit_height_per_em(font)
-        # start: left edge at W/3, bottom at the clock's baseline
-        bottom = H - round(fbs.CLOCK_MARGIN_CM * px_cm)
+        if start is None:  # left edge at W/3, bottom at the clock's baseline
+            left, bottom = W / 3, H - round(fbs.CLOCK_MARGIN_CM * px_cm)
+        else:
+            left, bottom = W * start[0] / 100, H * (1 - start[1] / 100)
         w0 = self.start_h * aspect
-        self.p0 = np.array([W / 3 + w0 / 2, bottom - self.start_h / 2])
+        self.p0 = np.array([left + w0 / 2, bottom - self.start_h / 2])
         self.p2 = np.array([W / 2, H / 2])
         self.p1 = np.array([self.p0[0], self.p2[1]])  # up first, then right
         self._fragments(random.Random(seed))
@@ -227,20 +254,25 @@ class Scene:
     def frame(self, t):
         """(RGB frame, rows (y0, y1) that differ from the background, or
         None = all)."""
-        W, H = self.size
         canvas = self.background.copy()
+        return canvas, self.draw(canvas, t)
+
+    def draw(self, canvas, t):
+        """Draw the scene at time t over what is on the canvas. Returns the
+        rows (y0, y1) it touched, or None = maybe all."""
+        W, H = self.size
         if t < self.travel + self.pause:
             q = ease_in_out(min(t / self.travel, 1.0)) if self.travel else 1.0
             alpha, rim = self.number(self.height(q))
             h, w = alpha.shape
             cx, cy = self.position(q)
-            rows = blit(canvas, alpha, ramp_color(q),
+            rows = blit(canvas, alpha, ramp_color(q, self.ramp),
                         round(cx - w / 2), round(cy - h / 2), rim)
-            return canvas, rows
+            return rows or (0, 0)
         p = min((t - self.travel - self.pause) / self.explode, 1.0)
         fade = (1 - p) ** 1.4
-        red = np.array(RAMP[-1][1], np.float32)
-        glow = np.array([255, 120, 30], np.float32)
+        red = np.array(self.ramp[-1][1], np.float32)
+        glow = self.glow
         g = max(0.0, 1 - p / 0.15)  # short bright flash at the burst
         grow = 1 + int(2 * p)  # fragments get a bit bigger as they spread
         a = self.frag_alpha
@@ -258,9 +290,9 @@ class Scene:
         # pieces fade out: their opacity goes to 0, the picture shows through
         op = (a * fade)[m][:, None]
         cols = np.broadcast_to(col[:, None, None, :], a.shape + (3,))[m]
-        under = self.background[yy[m], xx[m]].astype(np.float32)
+        under = canvas[yy[m], xx[m]].astype(np.float32)
         canvas[yy[m], xx[m]] = np.rint(under + (cols - under) * op).astype(np.uint8)
-        return canvas, None
+        return None
 
 
 def _rows4(rows, H):
@@ -271,28 +303,68 @@ def _rows4(rows, H):
 def play(display, scene, clock=time.monotonic, sleep=time.sleep, max_fps=25):
     """Time-driven like the transitions: slow frames are skipped, the scene
     keeps its duration. Returns the number of frames written."""
-    W, H = scene.size
-    display.show(scene.background)
-    prev = None
+    return play_many(display, [(0.0, scene)], clock, sleep, max_fps)
+
+
+def play_many(display, entries, clock=time.monotonic, sleep=time.sleep,
+              max_fps=25, stop=lambda: False):
+    """Play scenes on one timeline: entries are (start s, Scene), sorted by
+    start, possibly endless. Scenes running at the same time are drawn over
+    each other; the background is the one of the scene started last. When
+    stop() is true at the start of the next scene, no more scenes start
+    (the running ones end). Returns the number of frames written."""
+    it = iter(entries)
+    nxt = next(it, None)
+    if nxt is None:
+        return 0
+    H = nxt[1].size[1]
+    bg = nxt[1].background
+    display.show(bg)
+    active = []
+    prev = None   # rows written last time; None = the whole frame
+    shown = True  # the plain background is on the display
     frames = 0
     t0 = clock()
     while True:
         start = clock()
         t = start - t0
-        if t >= scene.total:
-            break
-        frame, rows = scene.frame(t)
-        if rows is None or prev is None:
-            display.show(frame)
+        while nxt is not None and nxt[0] <= t:
+            if active and stop():
+                nxt = None
+                break
+            active.append(nxt)
+            if nxt[1].background is not bg:
+                bg, prev = nxt[1].background, None
+            nxt = next(it, None)
+        active = [e for e in active if t - e[0] < e[1].total]
+        if not active:
+            if nxt is None:
+                break
+            if not shown:  # a gap between scenes: only the background
+                display.show(bg)
+                shown, prev = True, None
         else:
-            dirty = (min(rows[0], prev[0]), max(rows[1], prev[1]))
-            display.show_rows(frame, *_rows4(dirty, H))
-        prev = rows if rows is not None else (0, H)
-        frames += 1
+            canvas = bg.copy()
+            rows = []
+            for s0, scene in active:
+                rows.append(scene.draw(canvas, t - s0))
+            if None in rows:
+                rows = None
+            else:
+                rows = (min(r[0] for r in rows), max(r[1] for r in rows))
+            if rows is None or prev is None:
+                display.show(canvas)
+            else:
+                dirty = (min(rows[0], prev[0]), max(rows[1], prev[1]))
+                if dirty[0] < dirty[1]:
+                    display.show_rows(canvas, *_rows4(dirty, H))
+            prev = rows if rows is not None else (0, H)
+            shown = False
+            frames += 1
         left = 1 / max_fps - (clock() - start)
         if left > 0:
             sleep(left)
-    display.show(scene.background)
+    display.show(bg)
     return frames
 
 
@@ -304,6 +376,31 @@ def preview(scene, path, fps=12):
     imgs[0].save(path, save_all=True, append_images=imgs[1:],
                  duration=round(1000 / fps), loop=0)
     return len(imgs)
+
+
+def _numbers(text, n, what):
+    parts = [p for p in str(text).replace(",", " ").split()]
+    try:
+        vals = [float(p) for p in parts]
+    except ValueError:
+        vals = []
+    if len(vals) != n:
+        raise argparse.ArgumentTypeError(f"expected {what}, got {text!r}")
+    return vals
+
+
+def parse_color(text):
+    vals = _numbers(text, 3, "R,G,B")
+    if not all(0 <= v <= 255 for v in vals):
+        raise argparse.ArgumentTypeError(f"color values are 0..255: {text!r}")
+    return tuple(round(v) for v in vals)
+
+
+def parse_starting(text):
+    vals = _numbers(text, 2, "X,Y in percent")
+    if not all(0 <= v <= 100 for v in vals):
+        raise argparse.ArgumentTypeError(f"percent values are 0..100: {text!r}")
+    return tuple(vals)
 
 
 def parse_args(argv):
@@ -318,6 +415,14 @@ def parse_args(argv):
     ap.add_argument("--repeat", type=int, default=1,
                     help="times to play; 0 = loop until stopped")
     ap.add_argument("--seed", type=int, help="random seed of the fragments")
+    ap.add_argument("--color", type=parse_color,
+                    help="final color R,G,B, e.g. 30,180,10 (default: warm ramp to red)")
+    ap.add_argument("--starting", type=parse_starting, metavar="X,Y",
+                    help="start in percent of the screen: left edge from the "
+                         "left, bottom from the bottom (default 33,4)")
+    ap.add_argument("--timing", type=float, default=0.0,
+                    help="sequence: seconds after the end of the previous "
+                         "scene (negative: overlapping)")
     ap.add_argument("--background", default=os.environ.get("SCENE_BACKGROUND",
                                                             DEFAULT_BACKGROUND),
                     help="picture behind the scene, fills the screen; 'none' = "
@@ -340,7 +445,8 @@ def main(argv=None):
     if a.preview:
         size = a.size or (480, 320)
         scene = Scene(size, a.travel, a.pause, a.explode, a.seed,
-                      background=load_background(a.background, size))
+                      background=load_background(a.background, size),
+                      color=a.color, start=a.starting)
         n = preview(scene, a.preview, a.fps)
         print(f"{a.preview}: {n} frames, {scene.total:.1f} s")
         return 0
@@ -358,7 +464,8 @@ def main(argv=None):
     signal.signal(signal.SIGHUP, lambda *_: sys.exit(0))  # ssh closed
     size = (info.width, info.height)
     scene = Scene(size, a.travel, a.pause, a.explode, a.seed,
-                  background=load_background(a.background, size))
+                  background=load_background(a.background, size),
+                  color=a.color, start=a.starting)
     try:
         for _ in itertools.count() if a.repeat == 0 else range(a.repeat):
             t0 = time.monotonic()

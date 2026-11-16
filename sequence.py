@@ -11,6 +11,10 @@ is the plain slideshow, exactly as before.
       - scene:              # options as for scene140.py
           repeat: 3
           travel: 8
+      - scene:              # follows a scene: starts 3 s before its end
+          timing: -3
+          color: 30, 180, 10
+          starting: 70, 10
       - slideshow:          # options as for fb-slideshow.py, plus minutes
           minutes: 10
           shuffle: true
@@ -19,7 +23,9 @@ is the plain slideshow, exactly as before.
 
 A step's options replace the command-line options for that step only.
 Display options (fb, size, gamma, ...) are set on the command line, not per
-step. The file is read again at the start of every round, so changes on the
+step. Scenes following each other play as one block over one background
+(the first scene's, unless a later one sets its own); "timing" places a scene
+relative to the end of the one before (negative: overlapping). The file is read again at the start of every round, so changes on the
 stick take effect without a restart; if it is broken, the error is logged
 and the last good version stays in use.
 
@@ -162,9 +168,11 @@ def parse_config(text, base_argv=()):
                               f"{' min' if minutes else ''}"))
         elif kind == "scene":
             args = _parse(scene140.parse_args, to_argv(opts), where)
+            args.background_set = "background" in opts
             seconds = None if args.repeat == 0 else 0
             steps.append(Step(kind, args, seconds,
-                              f"scene x{args.repeat or 'forever'}"))
+                              f"scene x{args.repeat or 'forever'}"
+                              + (f" {args.timing:+g}s" if args.timing else "")))
         else:
             raise ConfigError(f"step {i}: unknown step '{kind}' "
                               "(slideshow or scene)")
@@ -220,6 +228,41 @@ class ConfigFile:
         return self.config
 
 
+def scene_entries(block, size, load=scene140.load_background):
+    """Consecutive scene steps -> (start s, Scene) entries on one timeline
+    (endless when a step repeats forever). Repetitions of a step follow each
+    other directly; a step's first scene starts `timing` s after the end of
+    the scene before (not before that one's start). One background for the
+    block: the first step's, unless a later step sets its own."""
+    pictures = {}
+
+    def picture(path):
+        if path not in pictures:
+            pictures[path] = load(path, size)
+        return pictures[path]
+
+    scenes = []
+    for i, step in enumerate(block):
+        a = step.args
+        path = (a.background if i == 0 or getattr(a, "background_set", True)
+                else block[0].args.background)
+        scenes.append((a, scene140.Scene(size, a.travel, a.pause, a.explode,
+                                         a.seed, background=picture(path),
+                                         color=a.color, start=a.starting)))
+
+    def timeline():
+        end = start = 0.0
+        for i, (a, scene) in enumerate(scenes):
+            for k in itertools.count() if a.repeat == 0 else range(a.repeat):
+                if i and not k:
+                    start = max(start, end + a.timing)
+                else:
+                    start = end
+                yield start, scene
+                end = start + scene.total
+    return scenes, timeline()
+
+
 def run(display, config_file, overlay, rng, paused=lambda: False,
         clock=time.monotonic, sleep=time.sleep, rounds=None, once=False,
         log=fbs.log):
@@ -231,23 +274,31 @@ def run(display, config_file, overlay, rng, paused=lambda: False,
     last = None      # frame on the display
     for _ in itertools.count() if rounds is None else range(rounds):
         cfg = config_file.get()
-        for step in cfg.steps:
+        steps = cfg.steps
+        i = 0
+        interrupted = False
+        while i < len(steps):
+            step = steps[i]
             a = step.args
-            if len(cfg.steps) > 1:
-                log(f"step: {step.text}")
-            if step.kind == "scene":
+            if step.kind == "scene":  # with the scenes right after it
+                j = i
+                while j < len(steps) and steps[j].kind == "scene":
+                    j += 1
+                block, i = steps[i:j], j
+                if len(steps) > 1:
+                    log("step: " + " + ".join(s.text for s in block))
                 display.overlay = None  # no clock over the scene
-                bg = scene140.load_background(a.background, display.size)
-                scene = scene140.Scene(display.size, a.travel, a.pause,
-                                       a.explode, a.seed, background=bg)
-                for _ in itertools.count() if a.repeat == 0 else range(a.repeat):
-                    scene140.play(display, scene, clock=clock, sleep=sleep)
-                    if config_file.changed():
-                        break
-                last = scene.background
+                scenes, entries = scene_entries(block, display.size)
+                scene140.play_many(display, entries, clock=clock, sleep=sleep,
+                                   stop=config_file.changed)
+                last = scenes[-1][1].background
                 if config_file.changed():
+                    interrupted = True
                     break
                 continue
+            i += 1
+            if len(steps) > 1:
+                log(f"step: {step.text}")
             display.overlay = overlay if a.clock else None
             key = (a.directory, a.shuffle)
             if key not in playlists:
@@ -266,8 +317,9 @@ def run(display, config_file, overlay, rng, paused=lambda: False,
             if unused is not None:  # preloaded, not shown: it comes next time
                 playlists[key] = itertools.chain([unused], playlists[key])
             if config_file.changed():
+                interrupted = True
                 break  # new round with the new config
-        else:
+        if not interrupted:
             if not cfg.loop:
                 return
             continue

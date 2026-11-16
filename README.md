@@ -139,7 +139,7 @@ about a quarter of a frame. Switch it off with `--no-clock`, e.g.
 ## Scene "140"
 
 A standalone scene (`scene140.py`, issue #11), not part of the slideshow
-yet. A tiny "140" (5 pt, Ubuntu Bold) appears at the clock's height, its
+yet (in a sequence: see below). A tiny "140" (5 pt, Ubuntu Bold) appears at the clock's height, its
 left edge at a third of the width. It rises in an arc (up first, then right)
 into the middle, growing until its digits are half the screen high, its color
 warming from white over yellow and orange to red. In the middle it bursts
@@ -167,13 +167,17 @@ make scene-preview SCENE_ARGS="--background background/scene-background.jpg"
 | `--explode S` | 3 | seconds for the burst |
 | `--repeat N` | 1 | times to play; `0` = loop until stopped (Ctrl+C) |
 | `--seed N` | random | fragments of the burst |
+| `--color R,G,B` | warm ramp to red | final color; the number starts white and blends into it, the fragments have it too |
+| `--starting X,Y` | `33,4` | start in percent of the screen: left edge of the number from the left, its bottom from the bottom (the end stays the middle) |
+| `--timing S` | 0 | only in a sequence: start S seconds after the end of the previous scene; negative = overlapping (see [Sequence](#sequence-configyaml)) |
 | `--background FILE` | `/mnt/stick/background/scene-background.jpg` | picture behind the scene; `none` = black; black if missing (env `SCENE_BACKGROUND`) |
 | `--preview GIF`, `--fps N` | – | render to an animated GIF instead of the display |
 
 While the number is small only its rows are written, so the panel gets far
-more frames than the 6 full frames/s SPI allows. Measured on hydra: ~24
-frames/s while small, ~19 while large, ~8 during the burst (which redraws the
-whole screen and is limited by SPI).
+more frames than the 6 full frames/s SPI allows. Measured on hydra with the
+background picture: ~16 frames/s for the rising number, ~3.5 during the
+burst (it redraws the whole screen: SPI plus the blending of the fragments).
+Two overlapping scenes run at the same rate.
 
 The font is in `fonts/` (Ubuntu font family, Ubuntu Font Licence 1.0,
 `fonts/LICENCE.txt`), because hydra does not have it installed.
@@ -201,8 +205,26 @@ sequence:
 - Steps: `slideshow` (options of `fb-slideshow.py`: `minutes`, `hold`,
   `shuffle`, `transitions`, `duration`, `easing`, `fill`, `clock`,
   `directory`) and `scene` (options of `scene140.py`: `repeat`, `travel`,
-  `pause`, `explode`, `background`, `seed`). A step without options:
-  `- scene`.
+  `pause`, `explode`, `background`, `seed`, `color`, `starting`, `timing`).
+  A step without options: `- scene`.
+- Scenes right after each other play as one block over one background, the
+  first scene's (unless a later one sets its own `background`); it stays on
+  the whole time, no black in between. `timing: -3` starts a scene 3 s
+  before the end of the one before (both run at once: the new number rises
+  while the old fragments fade), `timing: 2` leaves 2 s of only the
+  background. A step's repetitions (`repeat`) follow each other directly;
+  `timing` is about its first one. Example (issue #17):
+
+  ```yaml
+  sequence:
+    - scene:
+        color: 30, 180, 10     # final color R,G,B
+    - scene:
+        timing: -3             # 3 s before the end of the previous scene
+        starting: 70, 10       # percent from the left, from the bottom
+    - slideshow:
+        minutes: 10
+  ```
 - A step's options apply to that step only; options it does not set come
   from the service (`DEFAULT_ARGS` and `make config`). Display options
   (`gamma`, `limit`, `size`, ...) are not set per step but with `make config`.
@@ -220,7 +242,7 @@ make start                              # or make restart if it is running
 make status                             # the log shows the sequence read
 ```
 
-`make status` shows `/mnt/stick/config.yaml: scene x3, slideshow 10 min
+`make status` shows `/mnt/stick/config.yaml: scene x3, scene x1 -3s, slideshow 10 min
 (loop)` when the file is fine, or the reason it was rejected (`... - keeping
 the previous sequence`, after a fresh start that is the plain slideshow).
 Check the file by hand on hydra:

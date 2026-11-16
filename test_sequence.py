@@ -23,9 +23,11 @@ EXAMPLE = (HERE / "config.example.yaml").read_text()
 def test_example_config_is_valid():
     cfg = seq.parse_config(EXAMPLE)
     assert cfg.loop
-    assert [s.kind for s in cfg.steps] == ["scene", "slideshow"]
-    scene, show = cfg.steps
+    assert [s.kind for s in cfg.steps] == ["scene", "scene", "slideshow"]
+    scene, second, show = cfg.steps
     assert scene.args.repeat == 3 and scene.args.travel == 8
+    assert second.args.timing == -3 and second.args.color == (30, 180, 10)
+    assert second.args.starting == (70, 10)
     assert show.seconds == 600 and show.args.shuffle and show.args.hold == 5
     assert show.args.transitions == ["stack"]
 
@@ -170,10 +172,10 @@ sequence:
                         lambda p, *a, **k: (shown.append(pathlib.Path(p).name),
                                             real_load(p, *a, **k))[1])
     scenes = []
-    real_play = scene140.play
-    monkeypatch.setattr(scene140, "play",
-                        lambda disp, sc, **k: (scenes.append(disp.overlay),
-                                               real_play(disp, sc, **k))[1])
+    real_play = scene140.play_many
+    monkeypatch.setattr(scene140, "play_many",
+                        lambda disp, e, **k: (scenes.append(disp.overlay),
+                                              real_play(disp, e, **k))[1])
     c = Clock()
     disp = FakeDisplay()
     seq.run(disp, StaticConfig(cfg), "clock", random.Random(0), clock=c,
@@ -226,7 +228,7 @@ def test_main_check_validates_the_config(tmp_path, capsys):
     bad.write_text("sequence:\n  - slideshow: {hold: five}\n")
     assert seq.main(["--config", str(good), "--check"]) == 0
     out = capsys.readouterr().out
-    assert "ok: scene x3, slideshow 10 min (loop)" in out
+    assert "ok: scene x3, scene x1 -3s, slideshow 10 min (loop)" in out
     assert seq.main(["--config", str(bad), "--check"]) == 2
     assert "argument --hold" in capsys.readouterr().err
     assert seq.main(["--config", str(tmp_path / "none.yaml"), "--check"]) == 0
@@ -247,3 +249,70 @@ def test_main_end_to_end_once_on_a_fake_framebuffer(tmp_path):
 def test_service_runs_the_sequence():
     unit = (HERE / "ci" / "fb-slideshow.service").read_text()
     assert "/fb-slideshow/sequence.py $DEFAULT_ARGS $SHOW_ARGS" in unit
+
+
+# ------------------------------------------------- scene blocks (issue #17)
+def test_issue_17_example_parses():
+    cfg = seq.parse_config("""
+sequence:
+  - scene:
+      repeat: 1
+      travel: 8
+      color: 30, 180, 10       # final color
+  - scene:
+      repeat: 1
+      travel: 8
+      timing: -3
+      starting: 100, 20        # horizontal, vertical
+  - slideshow:
+""")
+    a, b = cfg.steps[0].args, cfg.steps[1].args
+    assert a.color == (30, 180, 10) and a.starting is None
+    assert b.timing == -3 and b.starting == (100, 20)
+    assert cfg.steps[1].text == "scene x1 -3s"
+
+
+def test_scene_block_timeline_overlaps_and_shares_the_background():
+    cfg = seq.parse_config("""
+sequence:
+  - scene: {repeat: 2, travel: 2, pause: 0, explode: 1, background: one.jpg}
+  - scene: {travel: 2, pause: 0, explode: 1, timing: -1}
+  - scene: {travel: 2, pause: 0, explode: 1, timing: 2, background: two.jpg}
+""")
+    loaded = []
+
+    def load(path, size):
+        loaded.append(path)
+        return np.full((H, W, 3), len(loaded), np.uint8)
+    scenes, entries = seq.scene_entries(cfg.steps, (W, H), load)
+    starts = [s for s, _ in entries]
+    assert starts == [0, 3, 5, 10]  # x2 back to back, -1 s overlap, +2 s gap
+    assert loaded == ["one.jpg", "two.jpg"]
+    assert scenes[0][1].background is scenes[1][1].background
+    assert scenes[2][1].background is not scenes[0][1].background
+
+
+def test_timing_never_starts_before_the_previous_scene():
+    cfg = seq.parse_config("""
+sequence:
+  - scene: {travel: 2, pause: 0, explode: 1, background: none}
+  - scene: {travel: 2, pause: 0, explode: 1, background: none, timing: -10}
+""")
+    _, entries = seq.scene_entries(cfg.steps, (W, H))
+    assert [s for s, _ in entries] == [0, 0]
+
+
+def test_run_plays_consecutive_scenes_as_one_block(monkeypatch):
+    cfg = seq.parse_config("""
+sequence:
+  - scene: {travel: 0.2, pause: 0, explode: 0.2, background: none}
+  - scene: {travel: 0.2, pause: 0, explode: 0.2, background: none, timing: -0.2}
+""")
+    blocks = []
+    monkeypatch.setattr(scene140, "play_many",
+                        lambda d, e, **k: blocks.append(list(e)))
+    logs = []
+    seq.run(FakeDisplay(), StaticConfig(cfg), None, random.Random(0),
+            rounds=1, log=logs.append)
+    assert [[round(s, 2) for s, _ in b] for b in blocks] == [[0, 0.2]]
+    assert logs == ["step: scene x1 + scene x1 -0.2s"]
