@@ -318,7 +318,8 @@ def run(display, config_file, overlay, rng, paused=lambda: False,
                 a.transitions, rng, sleep=sleep, clock=clock, paused=paused,
                 easing=fbs.EASINGS[a.easing],
                 refresh=display.refresh if display.overlay else None,
-                stop=stop, start=last, pile=a.pile)
+                stop=stop, start=last, pile=a.pile,
+                pile_turn=a.pile_turn)
             if unused:  # preloaded, not shown: they come next time
                 playlists[key] = itertools.chain(unused, playlists[key])
             if config_file.changed():
