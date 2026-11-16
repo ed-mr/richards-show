@@ -53,7 +53,7 @@ DEPLOY_FILES := fb-slideshow.py test_fb_slideshow.py requirements.txt \
 SCENE_ARGS ?=
 VERSIONS := import sys, numpy, PIL; print(sys.version.split()[0], numpy.__version__, PIL.__version__)
 
-.PHONY: test deploy test-hydra start stop restart pause resume status config sequence measure-fps scene scene-preview ci clean hydra-host
+.PHONY: test deploy test-hydra start stop restart pause resume status config sequence measure-fps scene scene-preview movie ci clean hydra-host
 
 $(VENV)/.stamp: requirements-ci.txt
 	$(UV) venv -q --clear --python $(PYTHON_VERSION) $(VENV)
@@ -111,6 +111,13 @@ scene:
 
 scene-preview: $(VENV)/.stamp
 	$(VENV)/bin/python scene140.py --preview scene140.gif $(SCENE_ARGS)
+
+# the sequence of CONFIG as a movie, offline (issue #23); pictures and
+# background from bilder/ and background/ here; SHOW_ARGS as on hydra
+MOVIE ?= $(basename $(CONFIG)).mp4
+MOVIE_ARGS ?=
+movie: $(VENV)/.stamp
+	$(VENV)/bin/python movie.py "$(CONFIG)" -o "$(MOVIE)" --show-args "$(SHOW_ARGS)" $(MOVIE_ARGS)
 
 ci: test deploy test-hydra restart
 

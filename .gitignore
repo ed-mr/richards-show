@@ -6,3 +6,5 @@ venv/
 bck/
 .venv-ci/
 scene140.gif
+config.yaml
+*.mp4

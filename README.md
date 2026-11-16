@@ -289,6 +289,32 @@ cp config.example.yaml config.yaml      # edit
 make sequence
 ```
 
+## Movie of a sequence
+
+To check a sequence offline, `movie.py` renders a config file into a movie
+(issue #23), 480x320 like the panel. It plays the sequence with the real
+show code against a simulated display and clock, so steps, transitions,
+scenes, the pile and the clock look as on hydra. Each frame takes about as
+long as on hydra (a full frame ~0.22 s over SPI), so the movie is about as
+jerky as the panel; `--smooth` renders every movie frame instead.
+
+```bash
+make movie                                      # config.yaml -> config.mp4
+make movie SHOW_ARGS="--shuffle --hold 5"       # with the options set on hydra
+make movie CONFIG=other.yaml MOVIE=other.mp4 MOVIE_ARGS="--smooth --seed 3"
+```
+
+- Pictures and background come from `bilder/` and `background/` in the
+  repo directory (`/mnt/stick/...` is mapped there; `--stick DIR` for
+  another copy of the stick).
+- The options are the service defaults (`DEFAULT_ARGS`) plus `SHOW_ARGS`,
+  which are not read from hydra: pass the ones set with `make config`.
+- One round of the sequence (`--rounds N`); a step that never ends is cut
+  after a minute (`--forever-minutes`). The clock starts at the current time
+  (`--start HH:MM`) and is always shown in slideshow steps.
+- Needs ffmpeg (`sudo apt install ffmpeg`); `-o name.gif` for a GIF.
+  `config.yaml` and `*.mp4` are not part of the repo.
+
 ## Pause and exit
 
 Pause and resume (toggles on every signal, the current image stays):
@@ -338,6 +364,7 @@ used; `make deploy HYDRA=<address>` forces one.
 | `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options on top of the service defaults, replacing the previously saved ones (kept across reboots and deploys; `SHOW_ARGS=` goes back to the service defaults). Invalid options are rejected and nothing changes |
 | `make sequence` | upload the local `config.yaml` (`CONFIG=` another file), check it on hydra and make it the sequence, replacing `/mnt/stick/config.yaml`; see [Sequence](#sequence-configyaml) |
 | `make scene` / `make scene-preview` | play the "140" scene on hydra (the show stays stopped) / render it to a GIF |
+| `make movie` | the sequence of `config.yaml` as a movie (`config.mp4`), offline, see [Movie of a sequence](#movie-of-a-sequence) |
 | `make measure-fps` | frame rate of transitions on the real panel (stops the show meanwhile) |
 | `make ci` | test + deploy + test-hydra + restart |
 | `make hydra-host` | which address of hydra is used |
