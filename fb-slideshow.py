@@ -700,6 +700,125 @@ def run_transition(display, fn, a, b, duration, clock=time.monotonic,
 
 
 # --------------------------------------------------------------------------
+# Photo pile (issue #20): with the stack transition the pictures lie as a
+# pile of prints on a dark table. The top one lies straight, the next one
+# peeks out below it, slightly turned; the top one is drawn away and the
+# next one straightens up into its place while a new one shows up below.
+# --------------------------------------------------------------------------
+PILE_SCALE = 0.88            # box of the top print, part of the screen
+PILE_TABLE = (20, 20, 22)
+PILE_BORDER_COLOR = (236, 234, 228)
+PILE_ANGLE = (1.5, 4.0)      # degrees, turn of the print below
+PILE_SHIFT = 0.025           # offset of the print below, part of the screen
+PILE_SHADOW = 0.55           # darkness of the shadow under a print
+
+
+class Card(NamedTuple):
+    """A print: the picture with a white border (RGBA) and its soft shadow
+    (L, larger by 2 * pad), unturned."""
+    image: Image.Image
+    shadow: Image.Image
+    pad: int
+
+
+class Pose(NamedTuple):
+    angle: float  # degrees, counterclockwise
+    dx: float     # offset of the center from the screen center, px
+    dy: float
+
+
+TOP = Pose(0.0, 0.0, 0.0)
+
+
+def load_card(path, size, fill=False):
+    """Load a picture as a print for the pile (fits the top box keeping its
+    aspect; --fill: cropped to the box)."""
+    from PIL import ImageFilter
+    w, h = size
+    border = max(3, round(min(w, h) * 0.015))
+    box = (round(w * PILE_SCALE) - 2 * border, round(h * PILE_SCALE) - 2 * border)
+    with Image.open(path) as im:
+        im.draft("RGB", (max(box), max(box)))
+        im = ImageOps.exif_transpose(im).convert("RGB")
+    im = (ImageOps.fit if fill else ImageOps.contain)(im, box, Image.LANCZOS)
+    card = Image.new("RGBA", (im.width + 2 * border, im.height + 2 * border),
+                     PILE_BORDER_COLOR + (255,))
+    card.paste(im, (border, border))
+    pad = max(4, round(min(w, h) * 0.03))
+    shadow = Image.new("L", (card.width + 2 * pad, card.height + 2 * pad), 0)
+    shadow.paste(round(255 * PILE_SHADOW),
+                 (pad, pad, pad + card.width, pad + card.height))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(pad / 2))
+    return Card(card, shadow, pad)
+
+
+def pile_pose(rng, size):
+    """Random pose of a print lying below the top one."""
+    w, h = size
+    angle = rng.uniform(*PILE_ANGLE) * rng.choice((-1, 1))
+    return Pose(angle, rng.uniform(-1, 1) * PILE_SHIFT * w,
+                rng.uniform(-1, 1) * PILE_SHIFT * h)
+
+
+def mix_pose(a, b, q):
+    return Pose(*(x + (y - x) * q for x, y in zip(a, b)))
+
+
+def draw_card(canvas, card, pose, opacity=1.0, shift=(0, 0)):
+    """Lay a print (with its shadow) onto the canvas (PIL RGB)."""
+    W, H = canvas.size
+    img, shadow = card.image, card.shadow
+    if pose.angle:
+        img = img.rotate(pose.angle, Image.BILINEAR, expand=True)
+        shadow = shadow.rotate(pose.angle, Image.BILINEAR, expand=True)
+    alpha = img.getchannel("A")
+    if opacity < 1:
+        alpha = alpha.point(lambda v: round(v * opacity))
+        shadow = shadow.point(lambda v: round(v * opacity))
+    cx = W / 2 + pose.dx + shift[0]
+    cy = H / 2 + pose.dy + shift[1]
+    off = max(1, card.pad // 3)  # light from the top left
+    sx, sy = round(cx - shadow.width / 2) + off, round(cy - shadow.height / 2) + off
+    canvas.paste((0, 0, 0), (sx, sy, sx + shadow.width, sy + shadow.height), shadow)
+    canvas.paste(img.convert("RGB"), (round(cx - img.width / 2),
+                                      round(cy - img.height / 2)), alpha)
+
+
+def pile_frame(size, top, under=None, under_pose=None):
+    """The pile at rest: top print straight, the next one below it."""
+    canvas = Image.new("RGB", size, PILE_TABLE)
+    if under is not None:
+        draw_card(canvas, under, under_pose)
+    if top is not None:
+        draw_card(canvas, top, TOP)
+    return np.asarray(canvas)
+
+
+def make_pile_transition(rng, size, top, under, under_pose, new, new_pose):
+    """Top print drawn away (direction as for stack), the one below
+    straightens up into its place, a new one fades in at the bottom.
+    f(a, b, p) as for the transitions; a and b are the rest frames."""
+    params = stack_params(rng)
+    table = Image.new("RGB", size, PILE_TABLE)
+    bottom = table.copy()
+    if new is not None:
+        draw_card(bottom, new, new_pose)
+
+    def run(a, b, p):
+        if p <= 0:
+            return a
+        if p >= 1:
+            return b
+        canvas = Image.blend(table, bottom, min(p / 0.3, 1.0))
+        if under is not None:
+            q = _smooth(min(max((p - 0.2) / 0.8, 0.0), 1.0))
+            draw_card(canvas, under, mix_pose(under_pose, TOP, q))
+        draw_card(canvas, top, TOP, shift=stack_position(p, params, size))
+        return np.asarray(canvas)
+    return run
+
+
+# --------------------------------------------------------------------------
 # Main loop
 # --------------------------------------------------------------------------
 def make_testcard(w, h, kind="bars"):
@@ -729,12 +848,13 @@ def make_testcard(w, h, kind="bars"):
 
 def slideshow(display, paths, hold, duration, fill, transitions, rng,
               sleep=time.sleep, clock=time.monotonic, paused=lambda: False,
-              easing=_smooth, refresh=None, stop=None, start=None):
+              easing=_smooth, refresh=None, stop=None, start=None, pile=False):
     """refresh: called about once a second while an image stands (clock).
     stop: checked after each image's hold time; True ends the show.
     start: frame on the display now (the first transition starts from it).
-    Returns (last frame shown, path that was preloaded but not shown or None),
-    so a following show can continue without skipping a picture."""
+    pile: the pictures as a pile of prints (issue #20; meant for "stack").
+    Returns (last frame shown, paths preloaded but not shown, in order), so a
+    following show can continue without skipping a picture."""
     size = display.size
 
     def wait(seconds):
@@ -755,6 +875,8 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
 
     def load(path):
         try:
+            if pile:
+                return path, load_card(path, size, fill)
             return path, load_image(path, size, fill)
         except Exception as e:  # broken / partially copied file
             log(f"Skipping {path}: {e}")
@@ -765,6 +887,12 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
         return None if p is None else loader.submit(load, p)
 
     prev = np.zeros((h, w, 3), np.uint8) if start is None else start
+    if pile:
+        try:
+            return _pile_show(display, submit, prev, hold, duration, rng,
+                              easing, wait, paused, sleep, refresh, stop, clock)
+        finally:
+            loader.shutdown(wait=False, cancel_futures=True)
     prev_path = None
     last = None
     fut = submit()
@@ -787,11 +915,61 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
                 if refresh is not None:
                     refresh()
             if stop is not None and stop():
-                unused = fut.result()[0] if fut is not None else None
-                return prev, unused
-        return prev, None
+                return prev, [fut.result()[0]] if fut is not None else []
+        return prev, []
     finally:
         loader.shutdown(wait=False, cancel_futures=True)
+
+
+def _pile_show(display, submit, prev, hold, duration, rng, easing, wait,
+               paused, sleep, refresh, stop, clock):
+    """slideshow() with the pile: the next print is loaded before the top one
+    is drawn away, the one after it during the hold."""
+    size = display.size
+    fut = submit()
+
+    def take():
+        """Next loaded print (path, card, pose) or None at the end; starts
+        loading the one after it."""
+        nonlocal fut
+        while fut is not None:
+            path, card = fut.result()
+            fut = submit()
+            if card is not None:
+                return path, card, pile_pose(rng, size)
+        return None
+
+    top, under = take(), None
+    if top is None:
+        return prev, []
+    under = take()
+
+    def rest(top, under):
+        return pile_frame(size, top[1], *(under[1:] if under else (None, None)))
+
+    frame = rest(top, under)
+    # whatever is on the display slides off the pile
+    run_transition(display, make_transition("stack", rng, size), prev, frame,
+                   duration, clock, easing)
+    while True:
+        wait(hold)
+        while paused():
+            sleep(0.2)
+            if refresh is not None:
+                refresh()
+        if stop is not None and stop():
+            unused = [under[0]] if under else []
+            if fut is not None:
+                unused.append(fut.result()[0])
+            return frame, unused
+        if under is None:
+            return frame, []
+        new = take()
+        nxt = rest(under, new)
+        fn = make_pile_transition(rng, size, top[1], under[1], under[2],
+                                  *(new[1:] if new else (None, None)))
+        run_transition(display, fn, frame, nxt, duration, clock, easing)
+        top, under, frame = under, new, nxt
 
 
 def parse_size(s):
@@ -842,6 +1020,10 @@ def parse_args(argv, env=os.environ):
                     default=int(env["SEED"]) if env.get("SEED") else None,
                     help="random seed (order with --shuffle, transition variations); "
                          "default: new each start, logged so a run can be repeated")
+    ap.add_argument("--pile", action=argparse.BooleanOptionalAction,
+                    default=None,
+                    help="pictures as a pile of prints (default: on when "
+                         "--transitions is only stack; --no-pile: off)")
     ap.add_argument("--clock", action=argparse.BooleanOptionalAction,
                     default=env.get("CLOCK", "on").lower() not in ("0", "off", "no"),
                     help="7-segment clock in the lower left corner, only while the "
@@ -867,6 +1049,8 @@ def parse_args(argv, env=os.environ):
     if bad or not names:
         ap.error("Unknown transition: %s" % ",".join(bad or ["(empty)"]))
     args.transitions = names
+    if args.pile is None:
+        args.pile = names == ["stack"]
     if any(b >= li for b, li in zip(args.black, args.limit)):
         ap.error("--black must be less than --limit")
     if args.clock_hours < 0:
@@ -930,7 +1114,7 @@ def describe(args, display, overlay, seed):
     return (f"{args.directory} -> {args.fb} {info.width}x{info.height} "
             f"{info.bpp}bpp invert={display.invert} hold={args.hold}s "
             f"transitions={','.join(args.transitions)} duration={args.duration}s "
-            f"easing={args.easing} seed={seed} "
+            f"easing={args.easing}{' pile' if args.pile else ''} seed={seed} "
             f"clock={'on' if overlay else 'off'}")
 
 
@@ -956,7 +1140,7 @@ def main(argv=None):
             playlist(args.directory, args.shuffle, rng, loop=not args.once),
             args.hold, args.duration, args.fill, args.transitions, rng,
             paused=paused.is_set, easing=EASINGS[args.easing],
-            refresh=display.refresh if overlay else None,
+            refresh=display.refresh if overlay else None, pile=args.pile,
         )
     except (KeyboardInterrupt, SystemExit):
         pass

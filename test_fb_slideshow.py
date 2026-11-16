@@ -1151,3 +1151,94 @@ def test_main_with_clock_end_to_end(tmp_path):
     px = np.frombuffer(shown[-1], "<u2")
     assert (px == 0xFFFF).any()  # white clock digits on the black picture
     assert fb.read_bytes() == b"\x00" * (PW * PH * 2)  # blanked on exit
+
+
+# ------------------------------------------------------- photo pile (issue #20)
+PILE_COLORS = [(250, 0, 0), (0, 250, 0), (0, 0, 250), (250, 250, 0), (0, 250, 250)]
+
+
+def pile_pics(tmp_path, n=4):
+    for i in range(n):
+        mk_jpg(tmp_path / f"{i}.jpg", PILE_COLORS[i], size=(W, H))
+    return fbs.list_images(str(tmp_path))
+
+
+def card(color, size=(W, H)):
+    img = Image.new("RGBA", (round(size[0] * 0.8), round(size[1] * 0.8)), color + (255,))
+    return fbs.Card(img, Image.new("L", (img.width + 8, img.height + 8), 100), 4)
+
+
+def test_pile_option_defaults_to_on_with_only_stack():
+    assert fbs.parse_args(["--transitions", "stack"], env={}).pile
+    assert not fbs.parse_args(["--transitions", "stack,fade"], env={}).pile
+    assert not fbs.parse_args([], env={}).pile
+    assert not fbs.parse_args(["--transitions", "stack", "--no-pile"], env={}).pile
+    assert fbs.parse_args(["--transitions", "fade", "--pile"], env={}).pile
+
+
+def test_load_card_fits_the_box_with_a_white_border(tmp_path):
+    W, H = 480, 320
+    mk_jpg(tmp_path / "wide.jpg", (0, 0, 200), size=(400, 100))
+    c = fbs.load_card(str(tmp_path / "wide.jpg"), (W, H))
+    assert c.image.mode == "RGBA"
+    assert c.image.width <= round(W * fbs.PILE_SCALE)
+    assert c.image.height < c.image.width / 3  # keeps its aspect
+    px = np.asarray(c.image)
+    assert tuple(px[0, 0, :3]) == fbs.PILE_BORDER_COLOR  # border
+    assert px[px.shape[0] // 2, px.shape[1] // 2, 2] > 150  # the picture
+    filled = fbs.load_card(str(tmp_path / "wide.jpg"), (W, H), fill=True)
+    assert abs(filled.image.width / filled.image.height - W / H) < 0.05
+
+
+def test_pile_frame_top_straight_in_the_middle_next_one_peeks_out():
+    W, H = 480, 320
+    rng = random.Random(1)
+    pose = fbs.pile_pose(rng, (W, H))
+    assert fbs.PILE_ANGLE[0] <= abs(pose.angle) <= fbs.PILE_ANGLE[1]
+    top, under = card((250, 0, 0), (W, H)), card((0, 250, 0), (W, H))
+    f = fbs.pile_frame((W, H), top, under, pose)
+    assert tuple(f[H // 2, W // 2]) == (250, 0, 0)
+    assert tuple(f[0, 0]) == fbs.PILE_TABLE or f[0, 0].max() < 30
+    green = (f[..., 1] > 200) & (f[..., 0] < 50)
+    assert green.sum() > 100  # the edge of the next print shows
+
+
+def test_pile_transition_draws_the_top_away_and_straightens_the_next():
+    W, H = 480, 320
+    rng = random.Random(2)
+    size = (W, H)
+    p1, p2 = fbs.pile_pose(rng, size), fbs.pile_pose(rng, size)
+    top, under, new = (card(c, size) for c in
+                       ((250, 0, 0), (0, 250, 0), (0, 0, 250)))
+    a = fbs.pile_frame(size, top, under, p1)
+    b = fbs.pile_frame(size, under, new, p2)
+    fn = fbs.make_pile_transition(rng, size, top, under, p1, new, p2)
+    assert fn(a, b, 0) is a and fn(a, b, 1) is b
+    red = [((fn(a, b, p)[..., 0] > 200) & (fn(a, b, p)[..., 1] < 50)).sum()
+           for p in (0.01, 0.5, 0.99)]
+    assert red[0] > red[1] > red[2]  # the top print leaves the screen
+    late = fn(a, b, 0.99).astype(int)
+    assert np.abs(late - b).mean() < 8  # almost the next rest frame
+
+
+def test_slideshow_with_pile_shows_all_pictures_in_order(tmp_path):
+    paths = pile_pics(tmp_path, 4)
+    d = FakeDisplay()
+    fbs.slideshow(d, paths, 1, 0, False, ["stack"], random.Random(0),
+                  sleep=lambda s: None, pile=True)
+    centers = [tuple(f[H // 2, W // 2]) for f in d.frames]
+    tops = [min(range(4), key=lambda i: sum(abs(int(x) - y) for x, y in
+                                            zip(c, PILE_COLORS[i])))
+            for c in centers]
+    assert tops == [0, 1, 2, 3]
+
+
+def test_slideshow_with_pile_returns_the_unused_pictures_in_order(tmp_path):
+    paths = pile_pics(tmp_path, 5)
+    stops = iter([False, True])
+    frame, unused = fbs.slideshow(FakeDisplay(), paths, 1, 0, False, ["stack"],
+                                  random.Random(0), sleep=lambda s: None,
+                                  stop=lambda: next(stops), pile=True)
+    # shown as top: 0, 1; 2 lies below, 3 was loading
+    assert [pathlib.Path(p).name for p in unused] == ["2.jpg", "3.jpg"]
+    assert frame.shape == (H, W, 3)

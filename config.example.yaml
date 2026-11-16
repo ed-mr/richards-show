@@ -5,7 +5,7 @@
 # Each step is "- slideshow:" or "- scene:" with options; the option names
 # are the ones of fb-slideshow.py / scene140.py (see README), e.g.
 #   slideshow: minutes, hold, shuffle, transitions, duration, easing,
-#              fill, clock, directory
+#              fill, clock, pile, directory
 #   scene:     repeat, travel, pause, explode, background, seed,
 #              color (final R,G,B), starting (X,Y percent from left/bottom),
 #              timing (seconds after the previous scene; negative: overlap)
