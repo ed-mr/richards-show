@@ -199,3 +199,89 @@ def test_load_background(tmp_path):
     assert not sc.load_background(None, (W, H)).any()
     assert sc.parse_args(["--background", "none"]).background is None
     assert sc.parse_args([]).background == sc.DEFAULT_BACKGROUND
+
+
+# ------------------------------------------------- variable scene (issue #17)
+def test_color_option_ends_in_that_color():
+    s = sc.Scene((W, H), seed=1, color=(30, 180, 10))
+    assert sc.ramp_color(0, s.ramp) == (255, 255, 255)
+    frame, _ = s.frame(s.travel + 0.1)
+    xs, ys = ink(frame)
+    r, g, b = np.median(frame[ys, xs].astype(int), axis=0)
+    assert g > 150 and r < 80 and b < 60
+    burst, _ = s.frame(s.travel + s.pause + 0.5)
+    xs, ys = ink(burst)
+    r, g, b = burst[ys, xs].astype(int).mean(axis=0)
+    assert g > r and g > b  # the fragments are green too
+
+
+def test_starting_option_in_percent_from_left_and_bottom():
+    s = sc.Scene((W, H), seed=1, start=(70, 10))
+    xs, ys = ink(s.frame(0)[0])
+    assert abs(xs.min() - 0.7 * W) <= 2
+    assert abs((H - ys.max()) - 0.1 * H) <= 3
+    # the end stays the middle
+    assert np.allclose(s.position(1), (W / 2, H / 2))
+
+
+@pytest.mark.parametrize("text,ok", [("30, 180, 10", (30, 180, 10)),
+                                     ("30,180,10", (30, 180, 10)),
+                                     ("30 180", None), ("300,0,0", None),
+                                     ("a,b,c", None)])
+def test_parse_color(text, ok):
+    if ok:
+        assert sc.parse_color(text) == ok
+    else:
+        with pytest.raises(Exception):
+            sc.parse_color(text)
+
+
+def test_parse_starting():
+    assert sc.parse_starting("100, 20") == (100, 20)
+    with pytest.raises(Exception):
+        sc.parse_starting("120,5")
+
+
+class FakeDisplay:
+    def __init__(self):
+        self.calls = []
+
+    def show(self, frame):
+        self.calls.append(("show", frame.copy()))
+
+    def show_rows(self, frame, y0, y1):
+        self.calls.append(("rows", frame.copy()))
+
+
+def test_play_many_overlapping_scenes_are_drawn_together():
+    bg = np.full((H, W, 3), 40, np.uint8)
+    a = sc.Scene((W, H), 1.0, 0.0, 1.0, seed=1, background=bg)
+    b = sc.Scene((W, H), 1.0, 0.0, 1.0, seed=2, background=bg,
+                 color=(30, 180, 10), start=(80, 60))
+    seen = []
+    real = sc.Scene.draw
+
+    def spy(self, canvas, t):
+        seen.append((id(self), round(t, 2)))
+        return real(self, canvas, t)
+    sc.Scene.draw, d = spy, FakeDisplay()
+    try:
+        clock = Clock(0.1)
+        n = sc.play_many(d, [(0.0, a), (1.5, b)], clock=clock, sleep=lambda s: None)
+    finally:
+        sc.Scene.draw = real
+    both = {t for i, t in seen if i == id(a)} & {t + 1.5 for i, t in seen if i == id(b)}
+    assert n > 0 and both  # at some moments both were drawn
+    assert clock.t < 2 * 3.5  # 3.5 s in all, not 4 (a then b)
+    assert all(f.max() > 0 for _, f in d.calls)  # never black: the background
+    assert (d.calls[-1][1] == bg).all()
+
+
+def test_play_many_stops_starting_scenes_when_told():
+    a = sc.Scene((W, H), 0.3, 0.0, 0.3, seed=1)
+    import itertools
+    endless = ((i * 0.6, a) for i in itertools.count())
+    clock = Clock(0.05)
+    sc.play_many(FakeDisplay(), endless, clock=clock, sleep=lambda s: None,
+                 stop=lambda: clock.t > 2)
+    assert clock.t < 5
