@@ -1193,8 +1193,8 @@ def test_load_card_fits_the_box_with_a_white_border(tmp_path):
 def test_pile_frame_top_straight_in_the_middle_next_one_peeks_out():
     W, H = 480, 320
     rng = random.Random(1)
-    pose = fbs.pile_pose(rng, (W, H))
-    assert fbs.PILE_ANGLE[0] <= abs(pose.angle) <= fbs.PILE_ANGLE[1]
+    pose = fbs.pile_pose(rng, (W, H), turn=4)
+    assert 0.4 * 4 <= abs(pose.angle) <= 4
     top, under = card((250, 0, 0), (W, H)), card((0, 250, 0), (W, H))
     f = fbs.pile_frame((W, H), top, under, pose)
     assert tuple(f[H // 2, W // 2]) == (250, 0, 0)
@@ -1207,7 +1207,7 @@ def test_pile_transition_draws_the_top_away_and_straightens_the_next():
     W, H = 480, 320
     rng = random.Random(2)
     size = (W, H)
-    p1, p2 = fbs.pile_pose(rng, size), fbs.pile_pose(rng, size)
+    p1, p2 = fbs.pile_pose(rng, size, 3), fbs.pile_pose(rng, size, 3)
     top, under, new = (card(c, size) for c in
                        ((250, 0, 0), (0, 250, 0), (0, 0, 250)))
     a = fbs.pile_frame(size, top, under, p1)
@@ -1242,3 +1242,13 @@ def test_slideshow_with_pile_returns_the_unused_pictures_in_order(tmp_path):
     # shown as top: 0, 1; 2 lies below, 3 was loading
     assert [pathlib.Path(p).name for p in unused] == ["2.jpg", "3.jpg"]
     assert frame.shape == (H, W, 3)
+
+
+def test_pile_turn_is_optional_default_straight():
+    assert fbs.parse_args([], env={}).pile_turn == 0
+    assert fbs.parse_args(["--pile-turn", "4"], env={}).pile_turn == 4
+    with pytest.raises(SystemExit):
+        fbs.parse_args(["--pile-turn", "-1"], env={})
+    rng = random.Random(0)
+    assert all(fbs.pile_pose(rng, (480, 320)).angle == 0 for _ in range(20))
+    assert all(fbs.pile_pose(rng, (480, 320), 2).angle != 0 for _ in range(20))

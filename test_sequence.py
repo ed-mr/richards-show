@@ -338,6 +338,8 @@ sequence:
   - slideshow: {transitions: fade}
 """)
     assert [s.args.pile for s in cfg.steps] == [True, False, False]
+    turned = seq.parse_config("sequence:\n  - slideshow: {pile_turn: 3}\n")
+    assert turned.steps[0].args.pile_turn == 3
 
 
 def test_run_with_pile_continues_the_pictures(tmp_path, monkeypatch):

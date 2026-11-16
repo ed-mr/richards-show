@@ -80,6 +80,7 @@ if frames are slow, frames are dropped and the duration stays the same.
 | speed curve | `--easing ease-in-out\|ease-out\|linear` | `EASING` | `ease-in-out` |
 | random seed (direction and drift of each `stack`) | `--seed N` | `SEED` | new each start, logged |
 | photo pile | `--pile` / `--no-pile` | – | on when the transitions are only `stack` |
+| turn of the print below in the pile | `--pile-turn DEG` | `PILE_TURN` | 0 (straight) |
 
 Examples:
 
@@ -110,16 +111,20 @@ To repeat a run exactly, take the seed from the start line in the log
 With `--transitions stack` alone (as on hydra) the pictures lie as a pile of
 prints on a dark table (issue #20). Each picture keeps its full size, with a
 thin white border (1 % of the screen height, 3 px); the next one lies below
-it, slightly turned (1.5–4°) and shifted. It shows while the top print is
-drawn away (as `stack`: left, right, up or down, with drift and a shadow)
-and straightens up into its place, while the one after it appears below.
-At rest it peeks out only beside pictures that are narrower or wider than
-the screen (where there were black bars before; `--fill`: all pictures
-have the screen's shape).
+it, slightly shifted. It shows while the top print is drawn away (as
+`stack`: left, right, up or down, with drift and a shadow) and moves into
+its place, while the one after it appears below. At rest it peeks out only
+beside pictures that are narrower or wider than the screen (where there
+were black bars before; `--fill`: all pictures have the screen's shape).
+
+`--pile-turn DEG` lets the print below lie turned by up to DEG degrees
+(randomly left or right, at least 40 % of it), straightening up as it comes
+to the top; e.g. `--pile-turn 4`. Default 0: straight. In a sequence step:
+`pile_turn: 4`.
 
 `--no-pile` switches it off (full-screen pictures, plain `stack`), `--pile`
 switches it on with other transitions too; in a sequence step: `pile: false`.
-Fixed in the code: `PILE_SCALE` (1.0 = full size), `PILE_BORDER`, `PILE_ANGLE`, `PILE_SHIFT`, `PILE_TABLE`,
+Fixed in the code: `PILE_SCALE` (1.0 = full size), `PILE_BORDER`, `PILE_SHIFT`, `PILE_TABLE`,
 `PILE_BORDER_COLOR`, `PILE_SHADOW`. Two pictures are loaded ahead (the one
 below and the one after it), so no transition waits for loading. On hydra a
 pile transition is as fast as the plain `stack` (~310 ms per frame, measured
@@ -224,7 +229,7 @@ sequence:
 ```
 
 - Steps: `slideshow` (options of `fb-slideshow.py`: `minutes`, `hold`,
-  `shuffle`, `transitions`, `duration`, `easing`, `fill`, `clock`, `pile`,
+  `shuffle`, `transitions`, `duration`, `easing`, `fill`, `clock`, `pile`, `pile_turn`,
   `directory`) and `scene` (options of `scene140.py`: `repeat`, `travel`,
   `pause`, `explode`, `background`, `seed`, `color`, `starting`, `timing`).
   A step without options: `- scene`.

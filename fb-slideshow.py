@@ -709,7 +709,7 @@ PILE_SCALE = 1.0             # box of the top print, part of the screen
 PILE_BORDER = 0.01           # white border, part of the screen height
 PILE_TABLE = (20, 20, 22)
 PILE_BORDER_COLOR = (236, 234, 228)
-PILE_ANGLE = (1.5, 4.0)      # degrees, turn of the print below
+PILE_TURN_MIN = 0.4          # least turn, part of --pile-turn
 PILE_SHIFT = 0.025           # offset of the print below, part of the screen
 PILE_SHADOW = 0.55           # darkness of the shadow under a print
 
@@ -753,10 +753,12 @@ def load_card(path, size, fill=False):
     return Card(card, shadow, pad)
 
 
-def pile_pose(rng, size):
-    """Random pose of a print lying below the top one."""
+def pile_pose(rng, size, turn=0.0):
+    """Random pose of a print lying below the top one. turn: largest angle
+    in degrees (0: not turned, only shifted)."""
     w, h = size
-    angle = rng.uniform(*PILE_ANGLE) * rng.choice((-1, 1))
+    angle = (rng.uniform(PILE_TURN_MIN * turn, turn) * rng.choice((-1, 1))
+             if turn > 0 else 0.0)
     return Pose(angle, rng.uniform(-1, 1) * PILE_SHIFT * w,
                 rng.uniform(-1, 1) * PILE_SHIFT * h)
 
@@ -849,11 +851,13 @@ def make_testcard(w, h, kind="bars"):
 
 def slideshow(display, paths, hold, duration, fill, transitions, rng,
               sleep=time.sleep, clock=time.monotonic, paused=lambda: False,
-              easing=_smooth, refresh=None, stop=None, start=None, pile=False):
+              easing=_smooth, refresh=None, stop=None, start=None, pile=False,
+              pile_turn=0.0):
     """refresh: called about once a second while an image stands (clock).
     stop: checked after each image's hold time; True ends the show.
     start: frame on the display now (the first transition starts from it).
-    pile: the pictures as a pile of prints (issue #20; meant for "stack").
+    pile: the pictures as a pile of prints (issue #20; meant for "stack");
+    pile_turn: largest turn of the print below, degrees (0: straight).
     Returns (last frame shown, paths preloaded but not shown, in order), so a
     following show can continue without skipping a picture."""
     size = display.size
@@ -891,7 +895,8 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
     if pile:
         try:
             return _pile_show(display, submit, prev, hold, duration, rng,
-                              easing, wait, paused, sleep, refresh, stop, clock)
+                              easing, wait, paused, sleep, refresh, stop, clock,
+                              pile_turn)
         finally:
             loader.shutdown(wait=False, cancel_futures=True)
     prev_path = None
@@ -923,7 +928,7 @@ def slideshow(display, paths, hold, duration, fill, transitions, rng,
 
 
 def _pile_show(display, submit, prev, hold, duration, rng, easing, wait,
-               paused, sleep, refresh, stop, clock):
+               paused, sleep, refresh, stop, clock, turn=0.0):
     """slideshow() with the pile: the next print is loaded before the top one
     is drawn away, the one after it during the hold."""
     size = display.size
@@ -937,7 +942,7 @@ def _pile_show(display, submit, prev, hold, duration, rng, easing, wait,
             path, card = fut.result()
             fut = submit()
             if card is not None:
-                return path, card, pile_pose(rng, size)
+                return path, card, pile_pose(rng, size, turn)
         return None
 
     top, under = take(), None
@@ -1025,6 +1030,10 @@ def parse_args(argv, env=os.environ):
                     default=None,
                     help="pictures as a pile of prints (default: on when "
                          "--transitions is only stack; --no-pile: off)")
+    ap.add_argument("--pile-turn", type=float, metavar="DEG",
+                    default=float(env.get("PILE_TURN", 0)),
+                    help="pile: the print below lies turned by up to DEG "
+                         "degrees, e.g. 4 (default 0: straight)")
     ap.add_argument("--clock", action=argparse.BooleanOptionalAction,
                     default=env.get("CLOCK", "on").lower() not in ("0", "off", "no"),
                     help="7-segment clock in the lower left corner, only while the "
@@ -1054,6 +1063,8 @@ def parse_args(argv, env=os.environ):
         args.pile = names == ["stack"]
     if any(b >= li for b, li in zip(args.black, args.limit)):
         ap.error("--black must be less than --limit")
+    if not 0 <= args.pile_turn <= 45:
+        ap.error("--pile-turn must be 0..45 degrees")
     if args.clock_hours < 0:
         ap.error("--clock-hours must not be negative")
     if args.diagonal <= 0:
@@ -1142,6 +1153,7 @@ def main(argv=None):
             args.hold, args.duration, args.fill, args.transitions, rng,
             paused=paused.is_set, easing=EASINGS[args.easing],
             refresh=display.refresh if overlay else None, pile=args.pile,
+            pile_turn=args.pile_turn,
         )
     except (KeyboardInterrupt, SystemExit):
         pass
