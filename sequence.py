@@ -91,8 +91,8 @@ def to_argv(opts):
         if val is True:
             argv.append(flag)
         elif val is False:
-            if key == "clock":
-                argv.append("--no-clock")
+            if key in ("clock", "pile"):
+                argv.append("--no-" + key)
             # other switches are off unless given
         elif isinstance(val, (list, tuple)):
             argv += [flag, ",".join(str(v) for v in val)]
@@ -318,9 +318,9 @@ def run(display, config_file, overlay, rng, paused=lambda: False,
                 a.transitions, rng, sleep=sleep, clock=clock, paused=paused,
                 easing=fbs.EASINGS[a.easing],
                 refresh=display.refresh if display.overlay else None,
-                stop=stop, start=last)
-            if unused is not None:  # preloaded, not shown: it comes next time
-                playlists[key] = itertools.chain([unused], playlists[key])
+                stop=stop, start=last, pile=a.pile)
+            if unused:  # preloaded, not shown: they come next time
+                playlists[key] = itertools.chain(unused, playlists[key])
             if config_file.changed():
                 interrupted = True
                 break  # new round with the new config

@@ -326,3 +326,44 @@ sequence:
             rounds=1, log=logs.append)
     assert [[round(s, 2) for s, _ in b] for b in blocks] == [[0, 0.2]]
     assert logs == ["step: scene x1 + scene x1 -0.2s"]
+
+
+# ------------------------------------------------------- photo pile (issue #20)
+def test_pile_per_step():
+    assert seq.to_argv({"pile": False}) == ["--no-pile"]
+    cfg = seq.parse_config("""
+sequence:
+  - slideshow: {minutes: 1, transitions: stack}
+  - slideshow: {minutes: 1, transitions: stack, pile: false}
+  - slideshow: {transitions: fade}
+""")
+    assert [s.args.pile for s in cfg.steps] == [True, False, False]
+
+
+def test_run_with_pile_continues_the_pictures(tmp_path, monkeypatch):
+    d = pictures(tmp_path, 8)
+    cfg = seq.parse_config(f"""
+sequence:
+  - slideshow: {{directory: {d}, minutes: 0.05, hold: 1, transitions: stack, duration: 0}}
+  - scene: {{repeat: 1, travel: 0.2, pause: 0, explode: 0.2, background: none}}
+""")
+    monkeypatch.setattr(scene140, "play_many", lambda *a, **k: 0)
+    tops = []
+    real = fbs.pile_frame
+    monkeypatch.setattr(fbs, "pile_frame",
+                        lambda size, top, *a: (tops.append(top), real(size, top, *a))[1])
+    real_load = fbs.load_card
+
+    def load(p, *a, **k):
+        c = real_load(p, *a, **k)
+        c.image.info["name"] = pathlib.Path(p).name
+        return c
+    monkeypatch.setattr(fbs, "load_card", load)
+    c = Clock()
+    seq.run(FakeDisplay(), StaticConfig(cfg), None, random.Random(0), clock=c,
+            sleep=c.sleep, rounds=3)
+    order = [t.image.info["name"] for t in tops]
+    order = [n for i, n in enumerate(order) if i == 0 or n != order[i - 1]]
+    assert len(order) >= 6
+    # none skipped (the playlist starts again after the 8th)
+    assert order == [f"{i % 8:02d}.jpg" for i in range(len(order))]
