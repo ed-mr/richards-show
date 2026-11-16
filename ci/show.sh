@@ -86,7 +86,7 @@ configure() {
     fi
     echo "defaults: $(default_args)"
     echo "options:  ${1:-(none, defaults only)}"
-    if active; then sc restart "$UNIT"; echo "restarted"; fi
+    if active; then sc restart "$UNIT"; echo "restarted"; report_sequence; fi
 }
 
 sequence_config() {  # $1 = uploaded file; checked, then made the config
@@ -106,6 +106,24 @@ sequence_config() {  # $1 = uploaded file; checked, then made the config
         echo "sequence saved to $SEQUENCE (the show picks it up)"
     fi
     printf '%s\n' "$out" | head -n 1 | sed 's/^[^ ]* ok:/sequence ok:/'
+}
+
+report_sequence() {
+    # after a (re)start: an error if the show rejected the config file
+    # (silent when it is fine); the line is logged ~2 s after the start
+    # (python + numpy load slowly on the Pi)
+    for _ in $(seq 1 40); do
+        line=$(log_lines | grep -m 1 -E '(^no |^/).*\.ya?ml' || true)
+        if [ -n "$line" ]; then
+            case "$line" in
+                *"NOT USED"*) echo "error: $line" >&2; return 1 ;;
+            esac
+            return 0
+        fi
+        active || { echo "the show did not start (make status)" >&2; return 1; }
+        sleep 0.5
+    done
+    echo "config file not read yet (make status)" >&2
 }
 
 signal_pause() {  # $1 = wanted state: pause | resume
@@ -147,9 +165,9 @@ status() {
 
 case "${1:-}" in
     install) install_unit ;;
-    start) sc start "$UNIT" && echo "started" ;;
+    start) sc start "$UNIT" && echo "started" && report_sequence ;;
     stop) sc stop "$UNIT" && echo "stopped" ;;
-    restart) sc restart "$UNIT" && echo "restarted" ;;
+    restart) sc restart "$UNIT" && echo "restarted" && report_sequence ;;
     pause) signal_pause pause ;;
     resume) signal_pause resume ;;
     status) status ;;
