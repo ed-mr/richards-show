@@ -318,8 +318,8 @@ make movie CONFIG=other.yaml MOVIE=other.mp4 MOVIE_ARGS="--smooth --seed 3"
 ## Pictures from Nextcloud
 
 hydra fetches the pictures itself (issue #25): the `.jpg`/`.jpeg` files in
-the Nextcloud folder `bilder` of the user `diashow` on
-`cloud.orthos.selfhost.eu` become an exact copy in `/mnt/stick/bilder`. New
+the Nextcloud folder `bilder` of the user `diashow` (an account of its own)
+become an exact copy in `/mnt/stick/bilder`. New
 pictures are fetched, deleted ones removed from the stick; other files there
 stay untouched. Nothing listens on hydra: it pulls over WebDAV whenever it is
 online (any network), with `rclone`.
@@ -344,10 +344,13 @@ online (any network), with `rclone`.
   ```
 - **Login:** the app password of `diashow` (revocable in Nextcloud under
   Settings → Security), stored obscured in `~/.config/rclone/rclone.conf` on
-  hydra as the remote `nc`.
+  hydra as the remote `nc`. The Nextcloud address and user are kept there as
+  well, not in this repo: the first `make diashow-setup` asks for them (or
+  takes `DIASHOW_URL` / `DIASHOW_USER`); later runs for a new app password
+  reuse them.
 
 ```bash
-make diashow-setup     # once / new app password: asks for it on hydra, enables the timer
+make diashow-setup     # once / new app password: asks for it on hydra (first time also the address), enables the timer
 make diashow-sync      # fetch now, with the log of the run
 make status            # "picture sync: sync ok: 59 pictures (0 new, 0 deleted) (next: ...)"
 ```
@@ -457,8 +460,12 @@ used; `make deploy HYDRA=<address>` forces one.
 | `make hydra-host` | which address of hydra is used |
 
 GitHub Actions runs the same steps on a self-hosted runner on itaka: the
-tests on every push and pull request, and on pushes to `main` also deploy
-and restart. The show can also be controlled from GitHub:
+tests on every push to a branch, and on pushes to `main` also deploy and
+restart. There is no `pull_request` trigger, and the repo settings
+(Settings → Actions → General → *Approval for running fork pull request
+workflows from contributors*: **all external contributors**) keep
+pull requests from forks off itaka. A fork could otherwise bring its own
+workflow and run code on itaka, which can reach hydra. The show can also be controlled from GitHub:
 
 ```bash
 gh workflow run show.yml -f action=pause
