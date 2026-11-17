@@ -1,0 +1,17 @@
+# Fetches the slideshow pictures from Nextcloud onto the stick (issue #25).
+# Started by diashow-sync.timer; installed by ci/show.sh install (user unit).
+[Unit]
+Description=Fetch slideshow pictures from Nextcloud onto the stick
+# stick not mounted: do not start, so nothing is written to the SD card
+# (with x-systemd.automount this is always true; the script checks that the
+# stick's file system is really there)
+ConditionPathIsMountPoint=/mnt/stick
+
+[Service]
+Type=oneshot
+# the Nextcloud folder (remote "nc" from make diashow-setup) and the target
+Environment=DIASHOW_SRC=nc:bilder DIASHOW_DEST=/mnt/stick/bilder
+ExecStart=%h/fb-slideshow/ci/diashow-sync.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min
