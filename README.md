@@ -484,3 +484,12 @@ cp ~/fb-slideshow/ci/fb-slideshow.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user restart fb-slideshow.service
 ```
+
+## License
+
+Copyright 2026 Eduard Moser
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+Exception: the font in `fonts/` (Ubuntu font family, Copyright Canonical Ltd.)
+is under the Ubuntu Font Licence 1.0, see `fonts/LICENCE.txt`.
