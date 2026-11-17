@@ -15,6 +15,19 @@ SRC=${DIASHOW_SRC:-nc:bilder}
 DEST=${DIASHOW_DEST:-/mnt/stick/bilder}
 MAX_DELETE=${DIASHOW_MAX_DELETE:-20}
 RCLONE=${RCLONE:-rclone}
+STICK=${DIASHOW_STICK-/mnt/stick}  # empty: no check (tests)
+
+# The stick must really be there. With x-systemd.automount in /etc/fstab,
+# /mnt/stick is always a mount point (autofs), even without the stick; the
+# access below mounts it if it is plugged in, otherwise only autofs is left.
+if [ -n "$STICK" ]; then
+    ls "$STICK" >/dev/null 2>&1 || true
+    fstype=$(findmnt -n -o FSTYPE -M "$STICK" 2>/dev/null | tail -n 1)
+    if [ -z "$fstype" ] || [ "$fstype" = autofs ]; then
+        echo "error: no stick mounted on $STICK - nothing done" >&2
+        exit 1
+    fi
+fi
 
 # only pictures in the folder itself, any case (.jpg .JPG .jpeg ...)
 FILTER="--include *.{jpg,jpeg} --ignore-case --max-depth 1"

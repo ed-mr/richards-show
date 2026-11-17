@@ -333,6 +333,15 @@ online (any network), with `rclone`.
   `rclone --max-delete 20` as a second safety net.
 - **The show** rescans the folder every round, so new pictures appear in
   the next round at the latest.
+- **Unplugging the stick:** with `x-systemd.automount` in its `/etc/fstab`
+  line the stick is mounted again on the next access after plugging it in
+  (the show finds its pictures by itself); without it, only at boot or with
+  `sudo mount /mnt/stick`. The sync checks that the stick's file system is
+  really mounted, so it never writes onto the SD card:
+
+  ```
+  UUID=6AD7-EA73  /mnt/stick  exfat  defaults,nofail,uid=1000,gid=1000,x-systemd.automount,x-systemd.device-timeout=5s  0  0
+  ```
 - **Login:** the app password of `diashow` (revocable in Nextcloud under
   Settings → Security), stored obscured in `~/.config/rclone/rclone.conf` on
   hydra as the remote `nc`.

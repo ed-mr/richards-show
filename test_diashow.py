@@ -36,7 +36,8 @@ def env(tmp_path):
     src.mkdir()
     dest.mkdir()
     e = dict(os.environ, RCLONE=str(fake), DIASHOW_SRC=str(src),
-             DIASHOW_DEST=str(dest), OFFLINE=str(tmp_path / "offline"))
+             DIASHOW_DEST=str(dest), OFFLINE=str(tmp_path / "offline"),
+             DIASHOW_STICK="")
     return e, src, dest, tmp_path
 
 
@@ -100,3 +101,12 @@ def test_units():
     assert "ExecStart=%h/fb-slideshow/ci/diashow-sync.sh" in service
     assert "OnBootSec=2min" in timer and "OnUnitActiveSec=1h" in timer
     assert "--max-delete" in SCRIPT.read_text()
+
+
+def test_no_stick_mounted_nothing_done(env):
+    e, src, dest, tmp = env
+    pics(src, ["a.jpg"])
+    e["DIASHOW_STICK"] = str(tmp)  # a plain directory, not a mount point
+    r = run(e)
+    assert r.returncode == 1 and "no stick mounted" in r.stderr
+    assert names(dest) == []

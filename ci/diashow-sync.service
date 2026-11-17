@@ -3,6 +3,8 @@
 [Unit]
 Description=Fetch slideshow pictures from Nextcloud onto the stick
 # stick not mounted: do not start, so nothing is written to the SD card
+# (with x-systemd.automount this is always true; the script checks that the
+# stick's file system is really there)
 ConditionPathIsMountPoint=/mnt/stick
 
 [Service]
