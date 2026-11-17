@@ -110,3 +110,62 @@ def test_no_stick_mounted_nothing_done(env):
     r = run(e)
     assert r.returncode == 1 and "no stick mounted" in r.stderr
     assert names(dest) == []
+
+
+# ci/diashow-setup.sh: the Nextcloud address is not in the repo; it comes from
+# the environment or the existing remote, and a new password keeps it.
+SETUP = pathlib.Path(__file__).with_name("ci") / "diashow-setup.sh"
+
+FAKE_RCLONE_CONFIG = r"""#!/bin/sh
+conf="$RCLONE_CONF"
+case "$1 $2" in
+  "config file") echo "Configuration file is stored at:"; echo "$conf" ;;
+  "config show") [ -f "$conf" ] && sed -n '/^\[nc\]/,/^$/p' "$conf" | grep . || exit 1 ;;
+  "config delete") [ -f "$conf" ] && sed -i '/^\[nc\]/,/^$/d' "$conf"; true ;;
+  "obscure -") printf 'obscured-'; cat; echo ;;
+  "lsd nc:") exit 0 ;;
+  *) exit 2 ;;
+esac
+"""
+
+
+@pytest.fixture
+def setup_env(tmp_path):
+    fake = tmp_path / "rclone"
+    fake.write_text(FAKE_RCLONE_CONFIG)
+    fake.chmod(0o755)
+    conf = tmp_path / "rclone.conf"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DIASHOW_")}
+    env.update(RCLONE=str(fake), RCLONE_CONF=str(conf), SYSTEMCTL="true")
+    return env, conf
+
+
+def setup(env, password="pw1"):
+    return subprocess.run(["sh", str(SETUP)], env=env, input=password + "\n",
+                          capture_output=True, text=True)
+
+
+def test_setup_has_no_address_in_the_repo(setup_env):
+    env, conf = setup_env
+    r = setup(env)
+    assert r.returncode == 1 and "set DIASHOW_USER" in r.stderr
+    r = setup(dict(env, DIASHOW_USER="show"))
+    assert r.returncode == 1 and "set DIASHOW_URL" in r.stderr
+    assert not conf.exists()
+    assert "DIASHOW_URL:-http" not in SETUP.read_text()  # no built-in address
+
+
+def test_setup_keeps_address_for_a_new_password(setup_env):
+    env, conf = setup_env
+    url = "https://cloud.example.org/remote.php/dav/files/show/"
+    r = setup(dict(env, DIASHOW_URL=url, DIASHOW_USER="show"))
+    assert r.returncode == 0, r.stderr
+    assert f"url = {url}" in conf.read_text()
+    assert "pass = obscured-pw1" in conf.read_text()
+    r = setup(env, "pw2")  # address and user from the existing remote
+    assert r.returncode == 0, r.stderr
+    text = conf.read_text()
+    assert text.count("[nc]") == 1
+    assert f"url = {url}" in text and "user = show" in text
+    assert "pass = obscured-pw2" in text and "pw1" not in text
+    assert oct(conf.stat().st_mode & 0o777) == "0o600"

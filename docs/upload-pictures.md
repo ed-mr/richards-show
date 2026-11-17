@@ -2,8 +2,7 @@
 
 You need two things, which you get from whoever runs the slideshow:
 
-- **the upload link** (a web address starting with
-  `https://cloud.orthos.selfhost.eu/s/...`), and
+- **the upload link** (a web address ending in `/s/` followed by a code), and
 - **the upload password.**
 
 No app is needed. The phone's web browser is enough (Safari on an iPhone,

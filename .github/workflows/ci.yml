@@ -1,13 +1,17 @@
 name: CI
 
 # Runs on the self-hosted runner on itaka (home LAN), which can reach hydra
-# over ssh. Tests run on every push and pull request; pushes to main are
-# additionally deployed to hydra, tested there, and the show is restarted.
+# over ssh. Tests run on every push to a branch of this repo; pushes to main
+# are additionally deployed to hydra, tested there, and the show is restarted.
+#
+# Deliberately no `pull_request` trigger: pull requests from forks must never
+# run on itaka. Only people with write access can push branches here, and
+# the repo settings require approval before any outside contributor's
+# workflow runs.
 
 on:
   push:
-    branches: [main]
-  pull_request:
+    branches: ['**']
   workflow_dispatch:
 
 concurrency:
@@ -24,7 +28,7 @@ jobs:
 
   deploy:
     needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, itaka]
     steps:
       - uses: actions/checkout@v5
