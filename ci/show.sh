@@ -5,6 +5,7 @@
 #
 #   show.sh install                 install/update and enable the service
 #   show.sh start|stop|restart|pause|resume|status
+#   show.sh diashow-sync            fetch the pictures from Nextcloud now
 #   show.sh sequence <file>         check <file>, then make it the sequence
 #                                   (/mnt/stick/config.yaml)
 #   show.sh config "<options>"      set options for fb-slideshow.py, on top
@@ -63,10 +64,48 @@ install_unit() {
             kill -TERM "$pid"
         fi
     done
+    install_diashow
     [ "$(loginctl show-user "$(id -un)" -p Linger --value)" = yes ] ||
         echo "warning: linger is off, the show will not start at boot" \
              "(fix: loginctl enable-linger)" >&2
     echo "service installed and enabled"
+}
+
+install_diashow() {
+    # picture sync from Nextcloud (issue #25): units only written when changed
+    changed=
+    for f in diashow-sync.service diashow-sync.timer; do
+        if ! cmp -s "$DIR/ci/$f" "$UNIT_DIR/$f"; then
+            cp "$DIR/ci/$f" "$UNIT_DIR/$f"
+            changed=1
+        fi
+    done
+    [ -z "$changed" ] || { sc daemon-reload; echo "diashow units updated"; }
+    if command -v rclone >/dev/null && rclone listremotes 2>/dev/null | grep -qx 'nc:'; then
+        sc is-enabled --quiet diashow-sync.timer 2>/dev/null ||
+            { sc enable --now --quiet diashow-sync.timer; echo "diashow-sync.timer enabled"; }
+    else
+        echo "picture sync not set up yet (make diashow-setup)"
+    fi
+}
+
+diashow_status() {
+    sc is-enabled --quiet diashow-sync.timer 2>/dev/null || {
+        echo "picture sync: off (make diashow-setup)"; return 0; }
+    last=$(journalctl --user-unit diashow-sync.service --no-pager -q -o cat -n 50 2>/dev/null |
+           grep -E '^(sync ok|error)' | tail -n 1)
+    next=$(sc show diashow-sync.timer -p NextElapseUSecRealtime --value 2>/dev/null)
+    echo "picture sync: ${last:-no run yet}${next:+ (next: $next)}"
+}
+
+diashow_sync() {
+    # run now and show its output (the service is oneshot: start waits)
+    since=$(date '+%Y-%m-%d %H:%M:%S')
+    ok=0
+    sc start diashow-sync.service || ok=1
+    journalctl --user-unit diashow-sync.service --no-pager -q -o cat --since "$since" |
+        grep -v -e '^Starting' -e '^Finished' -e '^Started' -e 'Consumed' || true
+    return $ok
 }
 
 configure() {
@@ -159,6 +198,7 @@ status() {
     echo "enabled at boot: $(sc is-enabled "$UNIT" 2>/dev/null || echo no)"
     echo "defaults: $(default_args)"
     echo "options:  $(sed -n 's/^SHOW_ARGS=//p' "$CONF" 2>/dev/null)"
+    diashow_status
     echo "--- log (current run)"
     log_lines | tail -n 5
 }
@@ -173,6 +213,7 @@ case "${1:-}" in
     status) status ;;
     config) configure "${2:-}" ;;
     sequence) sequence_config "$2" ;;
-    *) echo "usage: $0 install|start|stop|restart|pause|resume|status|config [options]|sequence <file>" >&2
+    diashow-sync) diashow_sync ;;
+    *) echo "usage: $0 install|start|stop|restart|pause|resume|status|config [options]|sequence <file>|diashow-sync" >&2
        exit 2 ;;
 esac

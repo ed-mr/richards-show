@@ -315,6 +315,39 @@ make movie CONFIG=other.yaml MOVIE=other.mp4 MOVIE_ARGS="--smooth --seed 3"
 - Needs ffmpeg (`sudo apt install ffmpeg`); `-o name.gif` for a GIF.
   `config.yaml` and `*.mp4` are not part of the repo.
 
+## Pictures from Nextcloud
+
+hydra fetches the pictures itself (issue #25): the `.jpg`/`.jpeg` files in
+the Nextcloud folder `bilder` of the user `diashow` on
+`cloud.orthos.selfhost.eu` become an exact copy in `/mnt/stick/bilder`. New
+pictures are fetched, deleted ones removed from the stick; other files there
+stay untouched. Nothing listens on hydra: it pulls over WebDAV whenever it is
+online (any network), with `rclone`.
+
+- **When:** a user timer, `diashow-sync.timer`, 2 min after boot and then
+  every hour. Offline, a run fails before touching the stick and the next one
+  tries again. Without the stick mounted the service does not start
+  (`ConditionPathIsMountPoint=/mnt/stick`), so nothing lands on the SD card.
+- **Deletion guard:** a run that would delete more than 20 pictures (e.g. the
+  folder was emptied or the share removed) aborts before changing anything;
+  `rclone --max-delete 20` as a second safety net.
+- **The show** rescans the folder every round, so new pictures appear in
+  the next round at the latest.
+- **Login:** the app password of `diashow` (revocable in Nextcloud under
+  Settings → Security), stored obscured in `~/.config/rclone/rclone.conf` on
+  hydra as the remote `nc`.
+
+```bash
+make diashow-setup     # once / new app password: asks for it on hydra, enables the timer
+make diashow-sync      # fetch now, with the log of the run
+make status            # "picture sync: sync ok: 59 pictures (0 new, 0 deleted) (next: ...)"
+```
+
+Folder and target are set in `ci/diashow-sync.service`
+(`DIASHOW_SRC=nc:bilder`, `DIASHOW_DEST`). rclone itself: `sudo apt install
+rclone` on hydra. On hydra: `systemctl --user list-timers`,
+`journalctl --user-unit diashow-sync`.
+
 ## Pause and exit
 
 Pause and resume (toggles on every signal, the current image stays):
@@ -364,6 +397,7 @@ used; `make deploy HYDRA=<address>` forces one.
 | `make config SHOW_ARGS="--shuffle --hold 20"` | set the show's options on top of the service defaults, replacing the previously saved ones (kept across reboots and deploys; `SHOW_ARGS=` goes back to the service defaults). Invalid options are rejected and nothing changes |
 | `make sequence` | upload the local `config.yaml` (`CONFIG=` another file), check it on hydra and make it the sequence, replacing `/mnt/stick/config.yaml`; see [Sequence](#sequence-configyaml) |
 | `make scene` / `make scene-preview` | play the "140" scene on hydra (the show stays stopped) / render it to a GIF |
+| `make diashow-setup` / `make diashow-sync` | set up the picture sync from Nextcloud (asks for the app password on hydra) / fetch now, see [Pictures from Nextcloud](#pictures-from-nextcloud) |
 | `make movie` | the sequence of `config.yaml` as a movie (`config.mp4`), offline, see [Movie of a sequence](#movie-of-a-sequence) |
 | `make measure-fps` | frame rate of transitions on the real panel (stops the show meanwhile) |
 | `make ci` | test + deploy + test-hydra + restart |

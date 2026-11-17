@@ -1,0 +1,11 @@
+# Runs diashow-sync.service 2 min after boot, then every hour (issue #25).
+[Unit]
+Description=Fetch slideshow pictures from Nextcloud (hourly)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+RandomizedDelaySec=1min
+
+[Install]
+WantedBy=timers.target
