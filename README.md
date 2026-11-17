@@ -357,6 +357,50 @@ Folder and target are set in `ci/diashow-sync.service`
 rclone` on hydra. On hydra: `systemctl --user list-timers`,
 `journalctl --user-unit diashow-sync`.
 
+### Adding pictures from a phone (upload only)
+
+Others add pictures through a Nextcloud **File drop** link (issue #27). Anyone
+with the link and its password can upload into `bilder`. They cannot see,
+change or delete what is already there, and they don't need an account or an
+app, only the phone's browser. Uploads reach the show with the next sync, so
+within an hour.
+
+The link has its own password. Don't hand out an app password for this: an
+app password gives full access to the `diashow` account, including deleting
+pictures.
+
+Set it up once in the Nextcloud web interface, logged in as `diashow`:
+
+1. Files → `bilder` → share icon → **Create a new share link**.
+2. In the link's settings (⋯ → *Customize link*):
+   - permission **File drop (upload only)**;
+   - **Set password**, a separate one used only for uploading;
+   - no expiration date (or set one);
+   - **Save**.
+3. Copy the link and send link and password to the people who should add
+   pictures, together with [docs/upload-pictures.md](docs/upload-pictures.md).
+   It explains the upload step by step for a phone. Nextcloud can also show
+   the link as a QR code (⋯ → *Show QR code*), which phone cameras read
+   directly.
+
+To change the password, edit it in the same link settings; the link stays
+the same. To lock everybody out, delete the link. Several links with
+different passwords (e.g. one per family) are possible, and each can be
+revoked on its own. Wrong passwords are slowed down by Nextcloud's
+brute-force protection.
+
+Notes:
+
+- **Everything uploaded goes straight onto the show.** There is no review
+  step. Remove an unwanted picture in `bilder` as `diashow`, and the next sync
+  removes it from the stick as well.
+- **Only `.jpg`/`.jpeg` files are synced**; other files stay in Nextcloud. When
+  a phone uploads through the browser it normally sends JPEG, but an iPhone
+  set to keep originals may send HEIC.
+- **Large phone photos are fine.** The show scales them down while loading
+  and applies their stored rotation. The upload limit is that of the
+  Nextcloud server (`PHP_UPLOAD_LIMIT`, 512 MB by default in the docker image).
+
 ## Pause and exit
 
 Pause and resume (toggles on every signal, the current image stays):
