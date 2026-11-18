@@ -5,8 +5,8 @@ Raspberry Pi. Shows the `*.jpg` / `*.jpeg` files of a directory in natural
 order, with a hard cut or a transition. Writes directly into the framebuffer
 (mmap), without X11 and without fbi.
 
-## Requirements
 
+## Requirements
 - Raspberry Pi with SPI TFT, framebuffer `/dev/fb1`
 - Display overlay matching the panel. Tested: Waveshare 3.5" IPS (B)
   with `dtoverlay=waveshare35b-v2:bgr=1,rotate=270` in `/boot/firmware/config.txt`
